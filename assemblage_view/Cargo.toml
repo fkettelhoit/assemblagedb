@@ -18,7 +18,7 @@ opt-level = 's'
 assemblage-broadcast-integration-tests = []
 
 [dependencies]
-assemblage_db = { path = "../assemblage_db" }
+assemblage_db = "0.1.0"
 assemblage_kv = "0.1.0"
 async-recursion = "0.3"
 async-trait = "0.1"
