@@ -1,0 +1,13 @@
+name = "assemblage-broadcast-dev"
+type = "rust"
+
+account_id = "9d5b89a2e151d81e2add91a75839afae"
+workers_dev = true
+route = ""
+zone_id = ""
+kv_namespaces = [
+    { binding = "BROADCAST", id = "12317d9530b3410b8265700e9492228a", preview_id = "41c2fb5a031347519cc455f0937b1ead" }
+]
+
+[env.production]
+name = "assemblage-broadcast"

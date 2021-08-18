@@ -1,0 +1,43 @@
+[package]
+name = "assemblage_view"
+description = "Linearized View Model and Bindings for AssemblageDB"
+version = "0.1.0"
+authors = ["Frederic Kettelhoit <kettelhoit@gmail.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+lto = true
+opt-level = 's'
+
+[features]
+assemblage-broadcast-integration-tests = []
+
+[dependencies]
+assemblage_db = { path = "../assemblage_db" }
+assemblage_kv = { path = "../assemblage_kv" }
+async-recursion = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+wasm-bindgen = { version = "0.2", features = ["serde-serialize"] }
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = { version = "0.1", optional = true }
+wee_alloc = { version = "0.4", optional = true }
+console_log = "0.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1.7", features = ["sync", "time", "rt-multi-thread"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"

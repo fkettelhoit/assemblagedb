@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "assemblage_broadcast",
+    "assemblage_db",
+    "assemblage_kv",
+    "assemblage_view",
+]
+
+[profile.release]
+opt-level = "s"

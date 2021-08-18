@@ -1,0 +1,58 @@
+[package]
+name = "assemblage_kv"
+description = "Versioned and Transactional KV Store for Native and Wasm Targets"
+version = "0.1.0"
+authors = ["Frederic Kettelhoit <kettelhoit@gmail.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dependencies]
+tokio = { version = "1.7", features = ["sync"] }
+async-trait = "0.1"
+crc32fast = "1.2"
+rmp-serde = "0.15"
+serde = "1.0"
+log = "0.4"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.7", features = ["fs", "io-util"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+console_error_panic_hook = { version = "0.1", optional = true }
+wee_alloc = { version = "0.4", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies.web-sys]
+version = "0.3"
+features = [
+  'console',
+  'RequestInit',
+  'Response',
+  'Url',
+  'Window',
+  'DomException',
+  'IdbFactory',
+  'IdbOpenDbRequest',
+  'IdbRequest',
+  'IdbRequestReadyState',
+  'IdbVersionChangeEvent',
+  'IdbDatabase',
+  'IdbTransaction',
+  'IdbTransactionMode',
+  'IdbObjectStore',
+]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1.7", features = ["time", "rt-multi-thread"] }
+env_logger = "0.8"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+console_log = "0.2"

@@ -1,0 +1,19 @@
+name: Wrangler
+
+on:
+  push:
+    branches:
+      - '*'
+      - '!main'
+
+jobs:
+  publish:
+    name: Publish CF Worker (Dev)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Wrangler Publish
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        working-directory: assemblage_broadcast
+        run: npm i @cloudflare/wrangler && npx wrangler publish
