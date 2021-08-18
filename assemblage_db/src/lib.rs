@@ -16,23 +16,24 @@
 //!   - _versioned:_ old values remain accessible until merged
 //!   - _transactional:_ snapshots are isolated through
 //!     [MVCC](https://en.wikipedia.org/wiki/Multiversion_concurrency_control)
-//!   - _storage-agnostic:_ supports native and wasm targets
+//!   - _storage-agnostic:_ supports native (files) and wasm (IndexedDB) targets
 //!   - _indexed:_ maintains an automatic index for similarity/overlap search
 //!   - _distributed:_ nodes can be published/subscribed as remote broadcasts
 //!
 //! ## Distributed DBs
 //!
-//! AssemblageDB is distributed in a sense very similar to a [distributed version
-//! control system](https://en.wikipedia.org/wiki/Distributed_version_control)
-//! such as git: All content is stored and edited locally without any
-//! coordination with other distributed copies, but AssemblageDBs can _broadcast_
-//! parts or all of their content to a cloud service and allow other instances
-//! to fetch the content into their local instances. These local "borrowed"
-//! copies are only modified when updates are fetched from the cloud service,
-//! but never directly edited by anyone but the owner instance, ensuring that no
-//! conflicts arise. The connection between borrowed content and owned content
-//! is instead constructed implicitly through _overlaps_, automatic links
-//! between textually similar paragraphs.
+//! AssemblageDB is distributed in a sense very similar to a [distributed
+//! version control
+//! system](https://en.wikipedia.org/wiki/Distributed_version_control) such as
+//! git: All content is stored and edited locally without any coordination with
+//! other distributed copies, but AssemblageDBs can _broadcast_ parts or all of
+//! their content to a cloud service and allow other instances to fetch the
+//! content into their local instances. These local "borrowed" copies are only
+//! modified when updates are fetched from the cloud service, but never directly
+//! edited by anyone but the owner instance, ensuring that no conflicts arise.
+//! The connection between borrowed content and owned content is instead
+//! constructed implicitly through _overlaps_, automatic links between textually
+//! similar paragraphs.
 //!
 //! In other words, AssemblageDBs form an overlapping network of document graphs
 //! where each DB can be independently edited by their owner and connections
@@ -53,9 +54,9 @@
 //!
 //! ## Data model
 //!
-//! Nodes in an AssemblageDB can be either atomic (a line of text for example) or
-//! nested, either in a _list_ containing multiple children or a _styled_ node
-//! containing just a single child. [`data::Node::List`] nodes have a
+//! Nodes in an AssemblageDB can be either atomic (a line of text for example)
+//! or nested, either in a _list_ containing multiple children or a _styled_
+//! node containing just a single child. [`data::Node::List`] nodes have a
 //! [_layout_](data::Layout), which controls how children are laid out in
 //! relation to each other, while [`data::Node::Styled`] nodes have zero or more
 //! [_block styles_](data::BlockStyle) or [_span styles_](data::SpanStyle), that

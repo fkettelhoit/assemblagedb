@@ -16,7 +16,7 @@ links. The data model is both:
   - _versioned:_ old values remain accessible until merged
   - _transactional:_ snapshots are isolated through
     [MVCC](https://en.wikipedia.org/wiki/Multiversion_concurrency_control)
-  - _storage-agnostic:_ supports native and wasm targets
+  - _storage-agnostic:_ supports native (files) and wasm (IndexedDB) targets
   - _indexed:_ maintains an automatic index for similarity/overlap search
   - _distributed:_ nodes can be published/subscribed as remote broadcasts
 
