@@ -1,6 +1,8 @@
 [package]
 name = "assemblage_view"
 description = "Linearized View Model and Bindings for AssemblageDB"
+license = "AGPL-3.0"
+repository = "https://github.com/fkettelhoit/assemblagedb/tree/main/assemblage_view"
 version = "0.1.0"
 authors = ["Frederic Kettelhoit <kettelhoit@gmail.com>"]
 edition = "2018"
