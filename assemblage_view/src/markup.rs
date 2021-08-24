@@ -9,9 +9,10 @@
 //!
 //! ## Markup Example
 //!
-//! (Note that the following code block is not strictly speaking the markup language
-//! that is parsed by the functions provided in this crate, as these functions
-//! always parse _a single line of markup into a single AssemblageDB block_.)
+//! (Note that the following code block is not strictly speaking the markup
+//! language that is parsed by the functions provided in this crate, as these
+//! functions always parse _a single line of markup into a single AssemblageDB
+//! block_.)
 //!
 //! ```text
 //! # Headings start with "#".
@@ -59,12 +60,12 @@
 //! only for text blocks (not full documents) and does not support any nesting,
 //! neither of headings nor of lists or other structures. This is deliberate, as
 //! nested structure and rich hierarchies arise from the _graph structure and
-//! interplay of different AssemblageDB nodes_, not as the result of a single and
-//! complex markup block.
+//! interplay of different AssemblageDB nodes_, not as the result of a single
+//! and complex markup block.
 //!
 //! Minimal markup encourages structure through the combination of different
 //! documents, whereas sophisticated markup encourages siloization into fewer
-//! less richly connected documents.
+//! and less richly connected documents.
 //!
 //! ## Specification (as ABNF)
 //!

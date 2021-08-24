@@ -719,11 +719,12 @@ impl Index {
                         index_all.insert(id, grams);
                     }
                     Node::List(Layout::Chain, _) => {
-                        // Gram sequences are combined by overlaying the last 3
-                        // grams of each child. Here is an example for the gram
+                        // N-gram sequences are combined by overlaying the last
+                        // 3 n-grams of each child with the first 3 n-grams of
+                        // the next child. Here is an example for the n-gram
                         // sequence combination of the three strings "", "ab"
-                        // and "c" (where each u32 gram is written as a vector
-                        // of 4 chars in big-endian order):
+                        // and "c" (with each u32 n-gram in this example written
+                        // as a vector of 4 chars in big-endian order):
                         //
                         // "":    [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0] +
                         // "ab":  [0, 0, 0, a], [0, 0, a, b], [0, a, b, 0], [a, b, 0, 0], [b, 0, 0, 0] +
