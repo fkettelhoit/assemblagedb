@@ -4,18 +4,14 @@ on: [push, pull_request]
 
 jobs:
   test_native:
-    name: Test Rust Native
+    name: Test Native
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - name: Test native target
-        run: cargo test --verbose
-      - name: Test native target (only cloud integration tests)
-        run: |
-          cargo test -p assemblage_db -p assemblage_view -p assemblage_broadcast \
-          --verbose --features assemblage-broadcast-integration-tests
+        run: cargo test --verbose --features assemblage-broadcast-integration-tests
   test_wasm:
-    name: Test Rust WASM
+    name: Test WebAssembly
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -27,14 +23,10 @@ jobs:
       - name: Test wasm target (assemblage_kv)
         run: wasm-pack test --headless --chrome --firefox assemblage_kv
       - name: Test wasm target (assemblage_db)
-        run: wasm-pack test --headless --chrome --firefox assemblage_db
-      - name: Test wasm target (assemblage_view)
-        run: wasm-pack test --headless --chrome --firefox assemblage_view
-      - name: Test wasm target (assemblage_db, only cloud integration tests)
         run: |
           WASM_BINDGEN_TEST_TIMEOUT=300 wasm-pack test --headless --chrome --firefox \
           assemblage_db -- --features assemblage-broadcast-integration-tests
-      - name: Test wasm target (assemblage_view, only cloud integration tests)
+      - name: Test wasm target (assemblage_view)
         run: |
           WASM_BINDGEN_TEST_TIMEOUT=300 wasm-pack test --headless --chrome --firefox \
           assemblage_view -- --features assemblage-broadcast-integration-tests
