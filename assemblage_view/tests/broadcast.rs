@@ -37,7 +37,7 @@ test! {
 
         assert!(broadcast.expiration.unwrap_or_default() >= last_updated + 60 * 60 * 24);
 
-        let mut current = db.current().await;
+        let current = db.current().await;
         let tile = current.tile(root_id).await?;
 
         let expected = Tile {
@@ -153,7 +153,7 @@ test! {
             (id2, broadcast1, last_updated1, broadcast2, last_updated2)
         };
 
-        let mut current = db.current().await;
+        let current = db.current().await;
         let tile = current.tile(root_id).await?;
 
         assert_eq!(tile.broadcasts, BTreeSet::from_iter(vec![
