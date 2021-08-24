@@ -57,7 +57,7 @@ text.
 
 ### Features
 
-  - _extremely minimal_: Only 4 block styles and 5 span styles.
+  - _extremely minimal_: Only 4 block styles and 4 span styles.
   - _simple to parse_: Each style corresponds to a single character.
   - _unambiguous_: Only one way to write each style.
   - _flat_: No nesting, neither for headings nor lists.
@@ -88,13 +88,12 @@ But " " is needed to separate the block markers from the text:
 #This is just regular text, as block styles need to end with a " ".
 #>-This is also just regular text...
 
-There are also 5 different span styles:
+There are also 4 different span styles:
 
 *These three words* are bold.
 And _this_ is italic.
 Words can be ~struck from a sentence~.
 Code can be displayed with a `monospaced typeface`!
-Some |parts of a sentence| can be marked and thus highlighted.
 
 Each span style can be escaped, for example in: 2 \* 2 = 4.
 
@@ -129,13 +128,12 @@ heading      = "#"
 quote        = ">"
 list         = "-"
 aside        = ","
-span-markup  = normal / bold / italic / struck / mono / marked
+span-markup  = normal / strong / emph / struck / code
 normal       = *(unescaped / escaped)
-unescaped    = ; all characters except "\", "*", "_", "~", "`", "|" and newline
-escaped      = "\\" / "\*" / "\_" / "\~" / "\`" / "|"
-bold         = "*" span-markup "*"
-italic       = "_" span-markup "_"
+unescaped    = ; all characters except "\", "*", "_", "~", "`", and newline
+escaped      = "\\" / "\*" / "\_" / "\~" / "\`"
+strong       = "*" span-markup "*"
+emph         = "_" span-markup "_"
 struck       = "~" span-markup "~"
-mono         = "`" span-markup "`"
-marked       = "|" span-markup "|"
+code         = "`" span-markup "`"
 ```
