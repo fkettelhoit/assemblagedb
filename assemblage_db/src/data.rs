@@ -428,9 +428,7 @@ pub enum SpanStyle {
     /// Inline text shown strikethrough or crossed out.
     Struck,
     /// Inline text shown verbatim in monospaced type.
-    Mono,
-    /// Inline text highlighted or marked to separate it from its context.
-    Marked,
+    Code,
 }
 
 /// Block styles that apply to one or more whole blocks.

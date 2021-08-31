@@ -57,7 +57,7 @@ text.
 
 ### Features
 
-  - _extremely minimal_: Only 4 block styles and 5 span styles.
+  - _extremely minimal_: Only 4 block styles and 4 span styles.
   - _simple to parse_: Each style corresponds to a single character.
   - _unambiguous_: Only one way to write each style.
   - _flat_: No nesting, neither for headings nor lists.
@@ -80,23 +80,22 @@ always parse _a single line of markup into a single AssemblageDB block_.)
 The above 4 block styles are all there is to block styling.
 They can be combined in any order:
 
-#>, A block quote heading aside.
-,>#> Also a block quote heading aside.
+#>, A block quote + heading + aside.
+,>#> Also a block quote + heading + aside.
 
 But " " is needed to separate the block markers from the text:
 
 #This is just regular text, as block styles need to end with a " ".
 #>-This is also just regular text...
 
-There are also 5 different span styles:
+There are also 4 different span styles:
 
-*These three words* are bold.
-And _this_ is italic.
+*These three words* are strong.
+And _this_ is emphasized.
 Words can be ~struck from a sentence~.
-Code can be displayed with a `monospaced typeface`!
-Some |parts of a sentence| can be marked and thus highlighted.
+`Code` is usually displayed with a monospaced typeface.
 
-Each span style can be escaped, for example in: 2 \* 2 = 4.
+Each span style can be escaped, like this: 2 \* 2 = 4; 2 \* 3 = 6.
 
 And that's it!
 ```
@@ -117,25 +116,52 @@ different AssemblageDB nodes_, not as the result of a single and complex markup
 block.
 
 Minimal markup encourages structure through the combination of different
-documents, whereas sophisticated markup encourages siloization into fewer less
-richly connected documents.
+documents, whereas sophisticated markup encourages siloization into fewer and
+less richly connected documents.
 
-### Specification (as ABNF)
+### (Pseudo-)Specification (as ABNF)
 
 ```abnf
-markup       = [block-markup] span-markup
+markup       = [block-markup] (span-markup / "")
 block-markup = 1*(heading / quote / list / aside) " "
 heading      = "#"
 quote        = ">"
 list         = "-"
 aside        = ","
-span-markup  = normal / bold / italic / struck / mono / marked
-normal       = *(unescaped / escaped)
-unescaped    = ; all characters except "\", "*", "_", "~", "`", "|" and newline
-escaped      = "\\" / "\*" / "\_" / "\~" / "\`" / "|"
-bold         = "*" span-markup "*"
-italic       = "_" span-markup "_"
-struck       = "~" span-markup "~"
-mono         = "`" span-markup "`"
-marked       = "|" span-markup "|"
+span-markup  = *(normal / strong / emph / struck / code)
+normal       = 1*(unescaped / escaped)
+unescaped    = ; all characters except "\", "*", "_", "~", "`", and newline
+escaped      = "\\" / "\*" / "\_" / "\~" / "\`"
+strong       = "*" span-markup "*" ; span-markup excluding nested strong
+emph         = "_" span-markup "_" ; span-markup excluding nested emph
+struck       = "~" span-markup "~" ; span-markup excluding nested struck
+code         = "`" span-markup "`" ; span-markup excluding nested code
 ```
+
+Please note that the above ABNF specification allows for ambiguous parse trees
+and is only meant as a slightly more formalized counterpart to the markup
+example. A "real" BNF specification needs to ensure that nested span markup is
+properly handled, so that `*contains *nested* strong markup* is never parsed as
+a `strong` markup containing nested `strong` markup, but rather as a sequence of
+`strong` markup, followed by normal text, followed by `strong` markup. This can
+of course be specified in ABNF, but is extremely repetitive and error-prone:
+
+```abnf
+strong        = "*" normal / strong-emph / strong-struck / strong-code "*"
+strong-emph   = "_" normal / strong-emph-struck / strong-emph-code "_"
+strong-emph-struck = "~" normal / strong-emph-struck-code "~"
+strong-emph-struck-code = "`" normal "`"
+strong-emph-code = "`" normal / strong-emph-code-struck "`"
+strong-emph-code-struck = "~" normal "~"
+strong-struck = "~" normal / strong-struck-emph / strong-struck-code "~"
+strong-struck-emph = "_" normal / strong-struck-emph-code "_"
+strong-struck-emph-code "`" normal "`"
+...
+```
+
+Additionally, it should be pointed out the the current parser implementation is
+more forgiving than the ABNF specification. For example, the implementation can
+handle _overlapping markup_ (which would be forbidden as per the spec) and will
+parse `*OnlyStrong_BothEmphAndStrong*OnlyEmph_` as a sequence of a `strong`
+"OnlyStrong", followed by a `strong` and `emph` "BothEmphAndStrong", followed by
+an `emph` "OnlyEmph".

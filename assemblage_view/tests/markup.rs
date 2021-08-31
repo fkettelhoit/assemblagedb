@@ -158,7 +158,7 @@ fn parse_block_with_span_markup() {
     ]);
     assert_roundtrip(markup, "", block);
 
-    let markup = "*bold*_italic_~struck~`mono`|marked|";
+    let markup = "*bold*_italic_~struck~`code`";
     let block = Block::text(vec![
         Span::Text {
             styles: styles![SpanStyle::Bold],
@@ -173,12 +173,8 @@ fn parse_block_with_span_markup() {
             text: "struck".to_string(),
         },
         Span::Text {
-            styles: styles![SpanStyle::Mono],
-            text: "mono".to_string(),
-        },
-        Span::Text {
-            styles: styles![SpanStyle::Marked],
-            text: "marked".to_string(),
+            styles: styles![SpanStyle::Code],
+            text: "code".to_string(),
         },
     ]);
     assert_roundtrip(markup, "", block);
