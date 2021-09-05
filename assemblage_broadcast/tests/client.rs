@@ -19,8 +19,8 @@ const BASE_URL: &str = if cfg!(feature = "workers-localhost") {
 #[test]
 fn get_invalid_route() -> Result<(), reqwest::Error> {
     let resp = reqwest::blocking::get(format!("{}/invalid/id", BASE_URL))?;
-    assert_eq!(resp.status(), reqwest::StatusCode::BAD_REQUEST);
-    assert_eq!(resp.text()?, "");
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(resp.text()?, "Not Found");
     Ok(())
 }
 
@@ -29,7 +29,7 @@ fn get_broadcast_not_found() -> Result<(), reqwest::Error> {
     let broadcast_id = 1234;
     let resp = reqwest::blocking::get(format!("{}/broadcast/{}", BASE_URL, broadcast_id))?;
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
-    assert_eq!(resp.text()?, "");
+    assert_eq!(resp.text()?, "Not Found");
     Ok(())
 }
 
@@ -42,7 +42,7 @@ fn get_episode_not_found() -> Result<(), reqwest::Error> {
         BASE_URL, broadcast_id, episode_id
     ))?;
     assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
-    assert_eq!(resp.text()?, "");
+    assert_eq!(resp.text()?, "Not Found");
     Ok(())
 }
 
@@ -158,7 +158,7 @@ fn post_episode_unauthorized() -> Result<(), reqwest::Error> {
         .body(bytes)
         .send()?;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
-    assert_eq!(resp.text()?, "");
+    assert_eq!(resp.text()?, "Unauthorized");
 
     let resp = reqwest::blocking::get(format!("{}/broadcast/{}", BASE_URL, broadcast_id))?;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
@@ -211,7 +211,7 @@ fn delete_episode_unauthorized() -> Result<(), reqwest::Error> {
         .delete(format!("{}/broadcast/{}", BASE_URL, broadcast_id))
         .send()?;
     assert_eq!(resp.status(), reqwest::StatusCode::UNAUTHORIZED);
-    assert_eq!(resp.text()?, "");
+    assert_eq!(resp.text()?, "Unauthorized");
 
     let resp = reqwest::blocking::get(format!("{}/broadcast/{}", BASE_URL, broadcast_id))?;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);

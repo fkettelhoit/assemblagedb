@@ -1,5 +1,5 @@
 name = "assemblage-broadcast-dev"
-type = "rust"
+type = "javascript"
 
 account_id = "9d5b89a2e151d81e2add91a75839afae"
 workers_dev = true
@@ -9,5 +9,23 @@ kv_namespaces = [
     { binding = "BROADCAST", id = "12317d9530b3410b8265700e9492228a", preview_id = "41c2fb5a031347519cc455f0937b1ead" }
 ]
 
+compatibility_date = "2021-08-27" # required
+compatibility_flags = [ "formdata_parser_supports_files" ] # required
+
 [env.production]
 name = "assemblage-broadcast"
+
+[vars]
+WORKERS_RS_VERSION = "0.0.3"
+
+[build]
+command = "cargo install -q worker-build && worker-build --release" # required
+
+[build.upload]
+dir    = "build/worker"
+format = "modules"
+main   = "./shim.mjs"
+
+[[build.upload.rules]]
+globs = ["**/*.wasm"]
+type  = "CompiledWasm"
