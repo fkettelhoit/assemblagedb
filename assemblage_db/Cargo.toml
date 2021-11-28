@@ -3,7 +3,7 @@ name = "assemblage_db"
 description = "Distributed Document/Graph DB for Connected and Overlapping Pages"
 license = "AGPL-3.0"
 repository = "https://github.com/fkettelhoit/assemblagedb/tree/main/assemblage_db"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Frederic Kettelhoit <kettelhoit@gmail.com>"]
 edition = "2018"
 
@@ -19,8 +19,9 @@ workers-env-prod = []
 futures = "0.3"
 async-recursion = "0.3"
 async-trait = "0.1"
-assemblage_kv = "0.1.0"
+assemblage_kv = { path = "../assemblage_kv" }
 serde = { version = "1.0", features = ["derive"] }
+rmp-serde = "0.15"
 tokio = { version = "1.7", features = ["sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

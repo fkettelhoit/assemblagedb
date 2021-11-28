@@ -171,15 +171,16 @@
 //!     })
 //! }
 //! ```
-
-#![deny(missing_docs)]
-#![deny(broken_intra_doc_links)]
 #![deny(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
-use assemblage_kv::{self, storage::Storage, KvStore, Snapshot};
+use assemblage_kv::{self, storage::Storage, KvStore, Snapshot, Version};
 use async_recursion::async_recursion;
+use async_trait::async_trait;
 use broadcast::BroadcastId;
 use data::{BlockStyle, Child, Id, Layout, Node, Parent, SpanStyle, Styles};
+use serde::{de::DeserializeOwned, Serialize};
 use std::collections::{BTreeSet, HashSet};
 
 pub mod broadcast;
@@ -204,6 +205,26 @@ pub enum Error {
     StoreError {
         /// The underlying KV store error.
         err: assemblage_kv::Error,
+        /// The DB operation that triggered the error.
+        operation: String,
+        /// Information about the context of the call in the larger DB
+        /// operation.
+        context: String,
+    },
+    /// The store key was invalid.
+    InvalidKeyError {
+        /// The reason why the key was invalid.
+        reason: String,
+        /// The DB operation that triggered the error.
+        operation: String,
+        /// Information about the context of the call in the larger DB
+        /// operation.
+        context: String,
+    },
+    /// The store value was invalid.
+    InvalidValueError {
+        /// The reason why the value was invalid.
+        reason: String,
         /// The DB operation that triggered the error.
         operation: String,
         /// Information about the context of the call in the larger DB
@@ -239,8 +260,170 @@ pub enum Error {
     },
 }
 
+#[async_trait(?Send)]
+pub(crate) trait TypedKvSnapshot<'a, S: Storage> {
+    async fn get_typed<K, V>(&self, slot: u8, k: &K) -> Result<Option<V>>
+    where
+        K: Serialize,
+        V: DeserializeOwned;
+
+    async fn get_unremoved_typed<K, V>(&self, slot: u8, k: &K) -> Result<Option<V>>
+    where
+        K: Serialize,
+        V: DeserializeOwned;
+
+    async fn versions_typed<K>(&self, slot: u8, k: &K) -> Result<Vec<Version>>
+    where
+        K: Serialize;
+
+    async fn keys_typed<K: DeserializeOwned>(&self, slot: u8) -> Result<Vec<K>>;
+
+    fn insert_typed<K, V>(&mut self, slot: u8, k: K, v: V) -> Result<()>
+    where
+        K: Serialize,
+        V: Serialize;
+
+    fn remove_typed<K>(&mut self, slot: u8, k: K) -> Result<()>
+    where
+        K: Serialize;
+}
+
+#[async_trait(?Send)]
+impl<'a, S: Storage> TypedKvSnapshot<'a, S> for Snapshot<'a, S> {
+    async fn get_typed<K, V>(&self, slot: u8, k: &K) -> Result<Option<V>>
+    where
+        K: Serialize,
+        V: DeserializeOwned,
+    {
+        let k = serde_to_blob_key(slot, k)?;
+        blob_to_serde_value(self.get(&k).await?)
+    }
+
+    async fn get_unremoved_typed<K, V>(&self, slot: u8, k: &K) -> Result<Option<V>>
+    where
+        K: Serialize,
+        V: DeserializeOwned,
+    {
+        let k = serde_to_blob_key(slot, k)?;
+        blob_to_serde_value(self.get_unremoved(&k).await?)
+    }
+
+    async fn versions_typed<K>(&self, slot: u8, k: &K) -> Result<Vec<Version>>
+    where
+        K: Serialize,
+    {
+        let k = &serde_to_blob_key(slot, k)?;
+        Ok(self.versions(k).await?)
+    }
+
+    async fn keys_typed<K: DeserializeOwned>(&self, slot: u8) -> Result<Vec<K>> {
+        let mut keys = Vec::new();
+        for key in self.keys().await? {
+            if let Some(suffix) = key.last() {
+                if *suffix == slot {
+                    keys.push(blob_to_serde_key(key)?);
+                }
+            }
+        }
+        Ok(keys)
+    }
+
+    fn insert_typed<K, V>(&mut self, slot: u8, k: K, v: V) -> Result<()>
+    where
+        K: Serialize,
+        V: Serialize,
+    {
+        let k = serde_to_blob_key(slot, &k)?;
+        let v = serde_to_blob_value(&v)?;
+        self.insert(k, v)?;
+        Ok(())
+    }
+
+    fn remove_typed<K>(&mut self, slot: u8, k: K) -> Result<()>
+    where
+        K: Serialize,
+    {
+        let k = serde_to_blob_key(slot, &k)?;
+        self.remove(k)?;
+        Ok(())
+    }
+}
+
+fn serde_to_blob_key(slot: u8, k: &impl Serialize) -> Result<Vec<u8>> {
+    rmp_serde::encode::to_vec(k)
+        .map(|mut v| {
+            v.push(slot);
+            v
+        })
+        .map_err(|e| Error::InvalidKeyError {
+            reason: format!("Unable to serialize: {}", e),
+            operation: "".to_string(),
+            context: "".to_string(),
+        })
+}
+
+fn blob_to_serde_key<K>(k: Vec<u8>) -> Result<K>
+where
+    K: DeserializeOwned,
+{
+    rmp_serde::decode::from_read(&k[..k.len() - 1]).map_err(|e| Error::InvalidKeyError {
+        reason: format!("{}", e),
+        operation: "".to_string(),
+        context: "".to_string(),
+    })
+}
+
+fn serde_to_blob_value(v: &impl Serialize) -> Result<Vec<u8>> {
+    rmp_serde::encode::to_vec(v).map_err(|e| Error::InvalidValueError {
+        reason: format!("Unable to serialize: {}", e),
+        operation: "".to_string(),
+        context: "".to_string(),
+    })
+}
+
+fn blob_to_serde_value<V>(v: Option<Vec<u8>>) -> Result<Option<V>>
+where
+    V: DeserializeOwned,
+{
+    v.map(|v| {
+        rmp_serde::decode::from_read(&v[..]).map_err(|e| Error::InvalidValueError {
+            reason: format!("{}", e),
+            operation: "".to_string(),
+            context: "".to_string(),
+        })
+    })
+    .transpose()
+}
+
 trait AsDbErrorWithContext<T> {
     fn with_context(self, op: &str, context: &str) -> Result<T>;
+}
+
+impl<T> AsDbErrorWithContext<T> for std::result::Result<T, Error> {
+    fn with_context(self, op: &str, context: &str) -> Result<T> {
+        self.map_err(|err| {
+            let operation = op.to_string();
+            let context = context.to_string();
+            match err {
+                Error::StoreError { err, .. } => Error::StoreError {
+                    err,
+                    operation,
+                    context,
+                },
+                Error::InvalidKeyError { reason, .. } => Error::InvalidKeyError {
+                    reason,
+                    operation,
+                    context,
+                },
+                Error::InvalidValueError { reason, .. } => Error::InvalidValueError {
+                    reason,
+                    operation,
+                    context,
+                },
+                e => e,
+            }
+        })
+    }
 }
 
 impl<T> AsDbErrorWithContext<T> for std::result::Result<T, assemblage_kv::Error> {

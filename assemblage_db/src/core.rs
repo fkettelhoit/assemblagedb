@@ -1,6 +1,7 @@
 use crate::{
     data::{BlockStyle, Child, Id, Layout, Node, Parent, Parents, Styles},
     AsDbErrorWithContext, AsIdNotFoundErrorWithContext, Db, DbSnapshot, RestoredNode, Result, Slot,
+    TypedKvSnapshot,
 };
 use assemblage_kv::{self, storage::Storage, KvStore, Version};
 use async_recursion::async_recursion;
@@ -29,12 +30,12 @@ impl<S: Storage> Db<S> {
             let id = Id::root();
             let mut t = db.current().await;
             t.store
-                .insert(Slot::Node as u8, &id, root)
+                .insert_typed(Slot::Node as u8, &id, root)
                 .with_context("open", "insert root node")?;
 
             let v: Parents = HashSet::new();
             t.store
-                .insert(Slot::Parents as u8, &id, v)
+                .insert_typed(Slot::Parents as u8, &id, v)
                 .with_context("open", "insert parents of root node")?;
             t.commit().await?;
         }
@@ -99,7 +100,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     /// or `None` if the node could not be found in the DB.
     pub async fn get(&self, id: Id) -> Result<Option<Node>> {
         self.store
-            .get::<_, Node>(Slot::Node as u8, &id)
+            .get_typed::<_, Node>(Slot::Node as u8, &id)
             .await
             .with_context("get", &format!("id {}", id))
     }
@@ -112,7 +113,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     /// exists in the DB, this method acts exactly like [`DbSnapshot::get`].
     pub async fn get_in_trash(&self, id: Id) -> Result<Option<Node>> {
         self.store
-            .get_unremoved::<_, Node>(Slot::Node as u8, &id)
+            .get_unremoved_typed::<_, Node>(Slot::Node as u8, &id)
             .await
             .with_context("get", &format!("id {}", id))
     }
@@ -122,7 +123,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     /// in the DB.
     pub async fn parents(&self, id: Id) -> Result<Parents> {
         self.store
-            .get::<_, Parents>(Slot::Parents as u8, &id)
+            .get_typed::<_, Parents>(Slot::Parents as u8, &id)
             .await
             .ok_or_invalid(id, "parents", "get parents by id")
     }
@@ -303,7 +304,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub async fn versions(&self, id: Id) -> Result<Vec<Version>> {
         Ok(self
             .store
-            .versions(Slot::Node as u8, &id)
+            .versions_typed(Slot::Node as u8, &id)
             .await
             .with_context("versions", &format!("id {}", id))?)
     }
@@ -324,7 +325,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                     let mut parents = HashSet::new();
                     parents.insert(parent);
                     self.store
-                        .insert(Slot::Parents as u8, &id, parents)
+                        .insert_typed(Slot::Parents as u8, &id, parents)
                         .with_context("add", "insert parents of eager child")?;
                     id
                 }
@@ -333,14 +334,14 @@ impl<S: Storage> DbSnapshot<'_, S> {
                     // Only get the parents that were not removed:
                     let mut parents = self
                         .store
-                        .get::<_, Parents>(Slot::Parents as u8, &id)
+                        .get_typed::<_, Parents>(Slot::Parents as u8, &id)
                         .await
                         .with_context("add", "get parents of lazy child")?
                         .unwrap_or_else(HashSet::new);
                     if !parents.contains(&parent) {
                         parents.insert(parent);
                         self.store
-                            .insert(Slot::Parents as u8, &id, parents)
+                            .insert_typed(Slot::Parents as u8, &id, parents)
                             .with_context("add", "insert parents of lazy child")?;
                     }
                     id
@@ -350,12 +351,12 @@ impl<S: Storage> DbSnapshot<'_, S> {
         }
         let node = node.with(lazy_children)?;
         self.store
-            .insert(Slot::Node as u8, &id, node)
+            .insert_typed(Slot::Node as u8, &id, node)
             .with_context("add", "insert added node")?;
 
         let v: Parents = HashSet::new();
         self.store
-            .insert(Slot::Parents as u8, &id, v)
+            .insert_typed(Slot::Parents as u8, &id, v)
             .with_context("add", "insert parents of added node")?;
 
         Ok(id)
@@ -364,7 +365,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub(crate) async fn swap_unindexed(&mut self, id: Id, replacement: Node) -> Result<()> {
         let existing = self
             .store
-            .get_unremoved::<_, Node>(Slot::Node as u8, &id)
+            .get_unremoved_typed::<_, Node>(Slot::Node as u8, &id)
             .await
             .ok_or_invalid(id, "swap_unindexed", "get existing node")?;
 
@@ -396,7 +397,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                     let mut parents = HashSet::new();
                     parents.insert(parent);
                     self.store
-                        .insert(Slot::Parents as u8, &child_id, parents)
+                        .insert_typed(Slot::Parents as u8, &child_id, parents)
                         .with_context("swap", "insert parents of eager child")?;
                     child_id
                 }
@@ -405,7 +406,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                     // Only get the parents that were not removed:
                     let mut parents = self
                         .store
-                        .get::<_, Parents>(Slot::Parents as u8, &id)
+                        .get_typed::<_, Parents>(Slot::Parents as u8, &id)
                         .await
                         .with_context("swap", "get parents of lazy child")?
                         .unwrap_or_else(HashSet::new);
@@ -416,7 +417,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                     }
                     parents.insert(parent);
                     self.store
-                        .insert(Slot::Parents as u8, &id, parents)
+                        .insert_typed(Slot::Parents as u8, &id, parents)
                         .with_context("swap", "insert parents of lazy child")?;
                     id
                 }
@@ -444,7 +445,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
         while let Some(id) = candidates.pop() {
             let is_obsolete = self
                 .store
-                .get_unremoved::<_, Parents>(Slot::Parents as u8, &id)
+                .get_unremoved_typed::<_, Parents>(Slot::Parents as u8, &id)
                 .await
                 .ok_or_invalid(id, "swap_unindexed", "get parents of obsolete node")?
                 .into_iter()
@@ -456,7 +457,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                 if !obsolete.contains(&id) {
                     let obsolete_node = self
                         .store
-                        .get_unremoved::<_, Node>(Slot::Node as u8, &id)
+                        .get_unremoved_typed::<_, Node>(Slot::Node as u8, &id)
                         .await
                         .ok_or_invalid(id, "swap_unindexed", "get obsolete")?;
                     for child in obsolete_node.children() {
@@ -473,13 +474,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
         // store.
         for id in obsolete.iter() {
             self.store
-                .remove(Slot::Parents as u8, &id)
+                .remove_typed(Slot::Parents as u8, &id)
                 .with_context("swap", "remove parents of obsolete node")?;
 
             // The node contents should remain accessible if accessed directly
             // by id, so we just remove them without overwriting first.
             self.store
-                .remove(Slot::Node as u8, &id)
+                .remove_typed(Slot::Node as u8, &id)
                 .with_context("swap", "remove obsolete node")?;
         }
 
@@ -493,14 +494,14 @@ impl<S: Storage> DbSnapshot<'_, S> {
             };
             let parents: Parents = self
                 .store
-                .get_unremoved::<_, Parents>(Slot::Parents as u8, &id)
+                .get_unremoved_typed::<_, Parents>(Slot::Parents as u8, &id)
                 .await
                 .ok_or_invalid(id, "swap_unindexed", "get parents of remaining node child")?
                 .into_iter()
                 .filter(remaining_parent)
                 .collect();
             self.store
-                .insert(Slot::Parents as u8, &id, parents)
+                .insert_typed(Slot::Parents as u8, &id, parents)
                 .with_context("swap", "insert parents of remaining child")?;
         }
 
@@ -513,7 +514,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
             visited.insert(id);
             let parents = self
                 .store
-                .get_unremoved::<_, Parents>(Slot::Parents as u8, &id)
+                .get_unremoved_typed::<_, Parents>(Slot::Parents as u8, &id)
                 .await
                 .ok_or_invalid(id, "swap_unindexed", "get parents of removed node")?;
             let parents_len = parents.len();
@@ -524,12 +525,12 @@ impl<S: Storage> DbSnapshot<'_, S> {
 
             if remaining_parents.len() != parents_len && obsolete.contains(&id) {
                 self.store
-                    .insert(Slot::Parents as u8, &id, remaining_parents)
+                    .insert_typed(Slot::Parents as u8, &id, remaining_parents)
                     .with_context("swap", "insert remaining parents")?;
             }
             let removed_node = self
                 .store
-                .get_unremoved::<_, Node>(Slot::Node as u8, &id)
+                .get_unremoved_typed::<_, Node>(Slot::Node as u8, &id)
                 .await
                 .ok_or_invalid(id, "swap_unindexed", "get removed")?;
             for child in removed_node.children() {
@@ -543,7 +544,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
         // finally insert the swapped node with its children.
         let v = replacement.with(lazy_children)?;
         self.store
-            .insert(Slot::Node as u8, &id, v)
+            .insert_typed(Slot::Node as u8, &id, v)
             .with_context("swap", "insert replacement node")?;
 
         Ok(())
@@ -553,7 +554,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub(crate) async fn restore_unindexed(&mut self, id: Id) -> Result<RestoredNode> {
         let is_removed = self
             .store
-            .versions(Slot::Node as u8, &id)
+            .versions_typed(Slot::Node as u8, &id)
             .await
             .map(|mut versions| versions.pop())
             .ok_or_invalid(id, "restore_unindexed", "get versions")?
@@ -564,14 +565,14 @@ impl<S: Storage> DbSnapshot<'_, S> {
 
         let node = self
             .store
-            .get_unremoved::<_, Node>(Slot::Node as u8, &id)
+            .get_unremoved_typed::<_, Node>(Slot::Node as u8, &id)
             .await
             .ok_or_invalid(id, "restore_unindexed", "get removed node")?;
         self.store
-            .insert(Slot::Node as u8, &id, &node)
+            .insert_typed(Slot::Node as u8, &id, &node)
             .with_context("restore_unindexed", "insert restored node")?;
         self.store
-            .insert(Slot::Parents as u8, &id, HashSet::<Parent>::new())
+            .insert_typed(Slot::Parents as u8, &id, HashSet::<Parent>::new())
             .with_context("restore_unindexed", "insert empty parents")?;
 
         for (index, child) in node.children().into_iter().enumerate() {
@@ -581,13 +582,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
                 RestoredNode::Restored(_) => HashSet::new(),
                 RestoredNode::NoNeedToRestoreNode => self
                     .store
-                    .get_unremoved::<_, Parents>(Slot::Parents as u8, &id)
+                    .get_unremoved_typed::<_, Parents>(Slot::Parents as u8, &id)
                     .await
                     .ok_or_invalid(id, "restore_unindexed", "get parents of restored child")?,
             };
             parents.insert(restored_parent);
             self.store
-                .insert(Slot::Parents as u8, &id, parents)
+                .insert_typed(Slot::Parents as u8, &id, parents)
                 .with_context("restore_unindexed", "insert restored parents of child")?;
         }
         Ok(RestoredNode::Restored(node))

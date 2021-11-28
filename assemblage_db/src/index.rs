@@ -1,9 +1,4 @@
-use crate::{
-    broadcast::{self, Broadcast, BroadcastId, BroadcastSubscription, OwnedBroadcast},
-    data::{Child, Id, Layout, Node, Overlap, Parent, Parents, Styles},
-    AsDbErrorWithContext, AsIdNotFoundErrorWithContext, DbSnapshot, Error, RestoredNode, Result,
-    Slot,
-};
+use crate::{AsDbErrorWithContext, AsIdNotFoundErrorWithContext, DbSnapshot, Error, RestoredNode, Result, Slot, TypedKvSnapshot, broadcast::{self, Broadcast, BroadcastId, BroadcastSubscription, OwnedBroadcast}, data::{Child, Id, Layout, Node, Overlap, Parent, Parents, Styles}};
 use assemblage_kv::{
     self,
     storage::{MemoryStorage, Storage},
@@ -31,13 +26,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub async fn publish_broadcast(&mut self, id: Id) -> Result<Broadcast> {
         let existing_broadcast = self
             .store
-            .get::<_, OwnedBroadcast>(Slot::BroadcastPublished as u8, &id)
+            .get_typed::<_, OwnedBroadcast>(Slot::BroadcastPublished as u8, &id)
             .await
             .with_context("publish_broadcast", "get published broadcast")?;
         let broadcast = broadcast::push(self, id, existing_broadcast.as_ref()).await?;
         let result = (&broadcast).into();
         self.store
-            .insert(Slot::BroadcastPublished as u8, id, broadcast)
+            .insert_typed(Slot::BroadcastPublished as u8, id, broadcast)
             .with_context("publish_broadcast", "insert published broadcasts")?;
         Ok(result)
     }
@@ -47,7 +42,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub async fn subscribe_to_broadcast(&mut self, id: &BroadcastId) -> Result<u32> {
         let subscription = self
             .store
-            .get::<_, BroadcastSubscription>(Slot::BroadcastSubscribed as u8, id)
+            .get_typed::<_, BroadcastSubscription>(Slot::BroadcastSubscribed as u8, id)
             .await
             .with_context("subscribe_to_broadcast", "get subscription")?;
         if subscription.is_none() {
@@ -67,7 +62,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub async fn fetch_broadcast(&mut self, id: &BroadcastId) -> Result<u32> {
         let mut subscription = self
             .store
-            .get::<_, BroadcastSubscription>(Slot::BroadcastSubscribed as u8, &id)
+            .get_typed::<_, BroadcastSubscription>(Slot::BroadcastSubscribed as u8, &id)
             .await
             .with_context("fetch_broadcast", "get subscription")?
             .unwrap_or_default();
@@ -78,7 +73,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
         }
         self.import(&bytes, subscription.namespace).await?;
         self.store
-            .insert(Slot::BroadcastSubscribed as u8, id, subscription)
+            .insert_typed(Slot::BroadcastSubscribed as u8, id, subscription)
             .with_context("fetch_broadcasts", "insert subscription")?;
         Ok(bytes.len() as u32)
     }
@@ -89,13 +84,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
         let mut published: Vec<OwnedBroadcast> = Vec::new();
         let keys: Vec<Id> = self
             .store
-            .keys(Slot::BroadcastPublished as u8)
+            .keys_typed(Slot::BroadcastPublished as u8)
             .await
             .with_context("list_broadcasts", "get published broadcast keys")?;
         for id in keys {
             published.push(
                 self.store
-                    .get(Slot::BroadcastPublished as u8, &id)
+                    .get_typed(Slot::BroadcastPublished as u8, &id)
                     .await
                     .with_context("list_broadcasts", "get published broadcast")?
                     .unwrap_or_else(|| panic!("Id {} not found in the store", id)),
@@ -121,13 +116,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
         let mut published: HashMap<Id, OwnedBroadcast> = HashMap::new();
         let keys: Vec<Id> = self
             .store
-            .keys(Slot::BroadcastPublished as u8)
+            .keys_typed(Slot::BroadcastPublished as u8)
             .await
             .with_context("update_broadcasts", "get published broadcast keys")?;
         for id in keys {
             let broadcast = self
                 .store
-                .get(Slot::BroadcastPublished as u8, &id)
+                .get_typed(Slot::BroadcastPublished as u8, &id)
                 .await
                 .with_context("update_broadcasts", "get published broadcast")?
                 .unwrap_or_else(|| panic!("Id {} could not be found in the store", id));
@@ -159,11 +154,11 @@ impl<S: Storage> DbSnapshot<'_, S> {
         for (id, b) in published.into_iter() {
             if let Some(broadcast) = updated.get(&id) {
                 self.store
-                    .insert(Slot::BroadcastPublished as u8, id, broadcast)
+                    .insert_typed(Slot::BroadcastPublished as u8, id, broadcast)
                     .with_context("update_broadcasts", "insert updated broadcast")?;
             } else if b.expiration.is_some() && b.expiration.unwrap() <= now {
                 self.store
-                    .remove(Slot::BroadcastPublished as u8, id)
+                    .remove_typed(Slot::BroadcastPublished as u8, id)
                     .with_context("update_broadcasts", "remove expired broadcast")?;
             }
         }
@@ -186,7 +181,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     /// Returns all nodes with content that overlaps with the specified node.
     pub async fn overlaps(&self, id: Id) -> Result<Vec<Overlap>> {
         self.store
-            .get(Slot::Overlaps as u8, &id)
+            .get_typed(Slot::Overlaps as u8, &id)
             .await
             .ok_or_invalid(id, "overlaps", "get overlaps in store")
     }
@@ -212,7 +207,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
         for (gram, source_occurs) in source_occurs.iter() {
             let matches = self
                 .store
-                .get::<_, HashMap<Id, Occurrences>>(Slot::Grams as u8, &gram)
+                .get_typed::<_, HashMap<Id, Occurrences>>(Slot::Grams as u8, &gram)
                 .await
                 .with_context("find", "get n-grams")?;
             if let Some(matches) = matches {
@@ -228,7 +223,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
             let match_count = match mode {
                 SearchMode::SymmetricOverlap => self
                     .store
-                    .get::<_, u32>(Slot::Count as u8, &id)
+                    .get_typed::<_, u32>(Slot::Count as u8, &id)
                     .await
                     .with_context("find", "get n-gram count")?
                     .unwrap_or_else(|| panic!("No count for id {} was found in the store", id)),
@@ -247,7 +242,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     ) -> Result<()> {
         let mut stack: Vec<Parent> = self
             .store
-            .get_unremoved::<_, Parents>(Slot::Parents as u8, &id)
+            .get_unremoved_typed::<_, Parents>(Slot::Parents as u8, &id)
             .await
             .ok_or_invalid(id, "update_parent_index", "get parents")?
             .into_iter()
@@ -270,7 +265,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
             } else {
                 let parents: Vec<Parent> = self
                     .store
-                    .get_unremoved::<_, Parents>(Slot::Parents as u8, &id)
+                    .get_unremoved_typed::<_, Parents>(Slot::Parents as u8, &id)
                     .await
                     .ok_or_invalid(id, "update_parent_index", "get parents of parent")?
                     .into_iter()
@@ -287,13 +282,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
         let store = &mut self.store;
         for (gram, occurrences) in diff.0.iter() {
             let mut stored_gram = store
-                .get::<_, HashMap<Id, Occurrences>>(Slot::Grams as u8, &gram)
+                .get_typed::<_, HashMap<Id, Occurrences>>(Slot::Grams as u8, &gram)
                 .await
                 .with_context("store_grams", "get n-grams")?
                 .unwrap_or_default();
             stored_gram.extend(occurrences);
             store
-                .insert(Slot::Grams as u8, gram, stored_gram)
+                .insert_typed(Slot::Grams as u8, gram, stored_gram)
                 .with_context("store_grams", "insert n-grams")?;
         }
         Ok(())
@@ -325,7 +320,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                     .filter(|o| *o != o_rev)
                     .collect();
                 self.store
-                    .insert(Slot::Overlaps as u8, o.id, overlaps_rev)
+                    .insert_typed(Slot::Overlaps as u8, o.id, overlaps_rev)
                     .with_context("store_overlaps", "insert removed reverse overlaps")?;
             }
             for o in added {
@@ -334,13 +329,13 @@ impl<S: Storage> DbSnapshot<'_, S> {
                 overlaps_rev.push(o_rev);
                 overlaps_rev.sort();
                 self.store
-                    .insert(Slot::Overlaps as u8, o.id, overlaps_rev)
+                    .insert_typed(Slot::Overlaps as u8, o.id, overlaps_rev)
                     .with_context("store_overlaps", "insert added reverse overlaps")?;
             }
 
             after.sort();
             self.store
-                .insert(Slot::Overlaps as u8, id, after)
+                .insert_typed(Slot::Overlaps as u8, id, after)
                 .with_context("store_overlaps", "insert overlaps")?;
         }
         Ok(())
@@ -349,7 +344,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     fn store_count(&mut self, grams: &GramsById) -> Result<()> {
         for (id, grams) in grams.iter() {
             self.store
-                .insert(Slot::Count as u8, id, grams.len())
+                .insert_typed(Slot::Count as u8, id, grams.len())
                 .with_context("store_count", "insert n-gram count")?;
         }
         Ok(())
@@ -408,10 +403,10 @@ impl<S: Storage> DbSnapshot<'_, S> {
         let ids_after: HashSet<Id> = after.all.keys().copied().collect();
         for removed in ids_before.difference(&ids_after) {
             self.store
-                .remove(Slot::Count as u8, removed)
+                .remove_typed(Slot::Count as u8, removed)
                 .with_context("swap", "remove count of removed node")?;
             self.store
-                .remove(Slot::Overlaps as u8, removed)
+                .remove_typed(Slot::Overlaps as u8, removed)
                 .with_context("swap", "remove overlaps of removed node")?;
         }
         Ok(())
@@ -487,14 +482,14 @@ impl<S: Storage> DbSnapshot<'_, S> {
         for (id, (node, parents, last_version)) in nodes.into_iter() {
             if last_version.timestamp > timestamp {
                 transaction
-                    .insert(Slot::Node as u8, &id, node)
+                    .insert_typed(Slot::Node as u8, &id, node)
                     .with_context("export_since", "insert node")?;
                 let parents: HashSet<Parent> = parents
                     .into_iter()
                     .filter(|p| ids.contains(&p.id))
                     .collect();
                 transaction
-                    .insert(Slot::Parents as u8, &id, parents)
+                    .insert_typed(Slot::Parents as u8, &id, parents)
                     .with_context("export_since", "insert parents")?;
             }
         }
@@ -506,15 +501,15 @@ impl<S: Storage> DbSnapshot<'_, S> {
             let mut parents = HashSet::new();
             parents.insert(Parent::new(root_id, 0));
             transaction
-                .insert(Slot::Parents as u8, &id, parents)
+                .insert_typed(Slot::Parents as u8, &id, parents)
                 .with_context("export_since", "insert root as parent")?;
             let node = Node::list(Layout::Page, vec![id]);
             transaction
-                .insert(Slot::Node as u8, &root_id, node)
+                .insert_typed(Slot::Node as u8, &root_id, node)
                 .with_context("export_since", "insert root as node")?;
             let parents: Parents = HashSet::new();
             transaction
-                .insert(Slot::Parents as u8, &root_id, parents)
+                .insert_typed(Slot::Parents as u8, &root_id, parents)
                 .with_context("export_since", "insert parents of root")?;
         }
         transaction
@@ -556,7 +551,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
         let imported = store.current().await;
         let mut before = Index::new();
         let ids_exported: Vec<Id> = imported
-            .keys(Slot::Node as u8)
+            .keys_typed(Slot::Node as u8)
             .await
             .with_context("import", "get keys of node slot")?;
         let ids_imported: Vec<Id> = ids_exported
@@ -567,7 +562,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
         for id in ids_imported.iter().copied() {
             let versions = self
                 .store
-                .versions(Slot::Node as u8, &id)
+                .versions_typed(Slot::Node as u8, &id)
                 .await
                 .with_context("import", "get versions of node")?;
             if !versions.is_empty() {
@@ -580,7 +575,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
             // that duplicate broadcasts can never overwrite each other but will
             // be mapped to unique ids.
             let node = imported
-                .get::<_, Node>(Slot::Node as u8, &id)
+                .get_typed::<_, Node>(Slot::Node as u8, &id)
                 .await
                 .with_context("import", "get node from imported store")?
                 .unwrap_or_else(|| panic!("Id {} not found in the store", id));
@@ -594,11 +589,11 @@ impl<S: Storage> DbSnapshot<'_, S> {
                 .collect();
             let node = node.with(children)?;
             self.store
-                .insert(Slot::Node as u8, xor_ids(id, namespace), node)
+                .insert_typed(Slot::Node as u8, xor_ids(id, namespace), node)
                 .with_context("import", "insert imported node")?;
 
             let parents = imported
-                .get::<_, Parents>(Slot::Parents as u8, &id)
+                .get_typed::<_, Parents>(Slot::Parents as u8, &id)
                 .await
                 .with_context("import", "get parents from imported store")?
                 .unwrap_or_else(|| panic!("Parents of id {} not found in the store", id));
@@ -607,7 +602,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
                 .map(|p| Parent::new(xor_ids(p.id, namespace), p.index))
                 .collect();
             self.store
-                .insert(Slot::Parents as u8, xor_ids(id, namespace), parents)
+                .insert_typed(Slot::Parents as u8, xor_ids(id, namespace), parents)
                 .with_context("import", "insert imported parents")?;
         }
 
@@ -639,7 +634,7 @@ impl<S: Storage> DbSnapshot<'_, S> {
     pub async fn namespaced_id(&self, broadcast_id: &BroadcastId, id: Id) -> Result<Id> {
         let subscription = self
             .store
-            .get::<_, BroadcastSubscription>(Slot::BroadcastSubscribed as u8, broadcast_id)
+            .get_typed::<_, BroadcastSubscription>(Slot::BroadcastSubscribed as u8, broadcast_id)
             .await
             .with_context("subscribe_to_broadcast", "get subscription")?;
         if let Some(subscription) = subscription {
