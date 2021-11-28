@@ -3,8 +3,6 @@ use assemblage_kv::{storage, storage::Storage, test, Error, KvStore, Result};
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-const SLOT_0: u8 = 0;
-
 test! {
     async fn merge_and_init1(storage) -> Result<()> {
         let store_name = String::from(storage.name());
@@ -17,15 +15,15 @@ test! {
         let value3 = vec![11, 12, 13];
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value1.clone())?;
+        t.insert(key1.clone(), value1.clone())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value2.clone())?;
+        t.insert(key1.clone(), value2.clone())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key2.clone(), value3.clone())?;
+        t.insert(key2.clone(), value3.clone())?;
         t.commit().await?;
 
         store.merge().await?;
@@ -33,8 +31,8 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let snapshot = store.current().await;
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &key1).await?.unwrap(), value2);
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &key2).await?.unwrap(), value3);
+        assert_eq!(snapshot.get(&key1).await?.unwrap(), value2);
+        assert_eq!(snapshot.get(&key2).await?.unwrap(), value3);
     }
 }
 
@@ -43,43 +41,43 @@ test! {
         let store_name = String::from(storage.name());
         let mut store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, &3, "will be overwritten")?;
-        t.insert(SLOT_0, &"key foo", "should remain")?;
-        t.insert(SLOT_0, &"key bar", "will be removed")?;
-        t.insert(SLOT_0, &"key baz", "will be overwritten")?;
+        t.insert(vec![3], "will be overwritten".into())?;
+        t.insert("key foo".into(), "should remain".into())?;
+        t.insert("key bar".into(), "will be removed".into())?;
+        t.insert("key baz".into(), "will be overwritten".into())?;
         t.commit().await?;
 
         let current = store.current().await;
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"key bar").await?.unwrap(),
-            "will be removed"
+            current.get("key bar".as_bytes()).await?,
+            Some("will be removed".into())
         );
         drop(current);
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"key baz", "should remain")?;
-        t.insert(SLOT_0, &3, "should remain")?;
-        t.insert(SLOT_0, &5, "should remain")?;
-        t.remove(SLOT_0, &"key bar")?;
+        t.insert("key baz".into(), "should remain".into())?;
+        t.insert(vec![3], "should remain".into())?;
+        t.insert(vec![5], "should remain".into())?;
+        t.remove("key bar".into())?;
         t.commit().await?;
 
         let current = store.current().await;
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &3).await?.unwrap(),
-            "should remain"
+            current.get(&[3]).await?,
+            Some("should remain".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &5).await?.unwrap(),
-            "should remain"
+            current.get(&[5]).await?,
+            Some("should remain".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"key foo").await?.unwrap(),
-            "should remain"
+            current.get("key foo".as_bytes()).await?,
+            Some("should remain".into())
         );
-        assert_eq!(current.get::<_, String>(SLOT_0, &"key bar").await?, None);
+        assert_eq!(current.get("key bar".as_bytes()).await?, None);
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"key baz").await?.unwrap(),
-            "should remain"
+            current.get("key baz".as_bytes()).await?,
+            Some("should remain".into())
         );
         drop(current);
 
@@ -90,21 +88,21 @@ test! {
         let current = store.current().await;
 
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &3).await?.unwrap(),
-            "should remain"
+            current.get(&[3]).await?,
+            Some("should remain".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &5).await?.unwrap(),
-            "should remain"
+            current.get(&[5]).await?,
+            Some("should remain".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"key foo").await?.unwrap(),
-            "should remain"
+            current.get("key foo".as_bytes()).await?,
+            Some("should remain".into())
         );
-        assert_eq!(current.get::<_, String>(SLOT_0, &"key bar").await?, None);
+        assert_eq!(current.get("key bar".as_bytes()).await?, None);
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"key baz").await?.unwrap(),
-            "should remain"
+            current.get("key baz".as_bytes()).await?,
+            Some("should remain".into())
         );
     }
 }
@@ -121,17 +119,17 @@ test! {
         let value3 = vec![11, 12, 13];
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value1.clone())?;
-        t.insert(SLOT_0, key2.clone(), value2.clone())?;
+        t.insert(key1.clone(), value1.clone())?;
+        t.insert(key2.clone(), value2.clone())?;
 
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &key1).await?.unwrap(), value1);
-        assert_eq!(t.get_unremoved::<_, Vec<u8>>(SLOT_0, &key2).await?.unwrap(), value2);
+        assert_eq!(t.get(&key1).await?.unwrap(), value1);
+        assert_eq!(t.get_unremoved(&key2).await?.unwrap(), value2);
 
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value3.clone())?;
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &key1).await?.unwrap(), value3);
+        t.insert(key1.clone(), value3.clone())?;
+        assert_eq!(t.get(&key1).await?.unwrap(), value3);
 
         t.commit().await?;
 
@@ -142,8 +140,8 @@ test! {
 
         let snapshot = store.current().await;
 
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &key2).await?.unwrap(), value2);
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &key1).await?.unwrap(), value1);
+        assert_eq!(snapshot.get(&key2).await?.unwrap(), value2);
+        assert_eq!(snapshot.get(&key1).await?.unwrap(), value1);
 
         drop(snapshot);
         store.merge().await?;
@@ -155,23 +153,23 @@ test! {
         let store_name = String::from(storage.name());
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"foo", "foo v1")?;
-        t.insert(SLOT_0, &"bar", "bar")?;
+        t.insert("foo".into(), "foo v1".into())?;
+        t.insert("bar".into(), "bar".into())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"foo", "foo v2")?;
+        t.insert("foo".into(), "foo v2".into())?;
         t.commit().await?;
 
         let current = store.current().await;
 
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"foo").await?.unwrap(),
-            "foo v2"
+            current.get("foo".as_bytes()).await?,
+            Some("foo v2".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"bar").await?.unwrap(),
-            "bar"
+            current.get("bar".as_bytes()).await?,
+            Some("bar".into())
         );
 
         drop(current);
@@ -183,12 +181,12 @@ test! {
         let current = store.current().await;
 
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"foo").await?.unwrap(),
-            "foo v1"
+            current.get("foo".as_bytes()).await?,
+            Some("foo v1".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"bar").await?.unwrap(),
-            "bar"
+            current.get("bar".as_bytes()).await?,
+            Some("bar".into())
         );
 
         drop(current);
@@ -201,23 +199,23 @@ test! {
         let store_name = String::from(storage.name());
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"foo", "foo v1")?;
-        t.insert(SLOT_0, &"bar", "bar")?;
+        t.insert("foo".into(), "foo v1".into())?;
+        t.insert("bar".into(), "bar".into())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"foo", "foo v2")?;
+        t.insert("foo".into(), "foo v2".into())?;
         t.commit().await?;
 
         let current = store.current().await;
 
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"foo").await?.unwrap(),
-            "foo v2"
+            current.get("foo".as_bytes()).await?,
+            Some("foo v2".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"bar").await?.unwrap(),
-            "bar"
+            current.get("bar".as_bytes()).await?,
+            Some("bar".into())
         );
 
         drop(current);
@@ -227,18 +225,18 @@ test! {
         let mut store = KvStore::open(storage).await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"foo", "foo v2")?;
+        t.insert("foo".into(), "foo v2".into())?;
         t.commit().await?;
 
         let current = store.current().await;
 
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"foo").await?.unwrap(),
-            "foo v2"
+            current.get("foo".as_bytes()).await?,
+            Some("foo v2".into())
         );
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &"bar").await?.unwrap(),
-            "bar"
+            current.get("bar".as_bytes()).await?,
+            Some("bar".into())
         );
 
         drop(current);
@@ -250,26 +248,26 @@ test! {
     async fn remove_key_in_transaction(storage) -> Result<()> {
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, &5, "foo")?;
+        t.insert(vec![5], "foo".into())?;
         t.commit().await?;
 
         let current = store.current().await;
-        assert_eq!(current.get::<_, String>(SLOT_0, &5).await?.unwrap(), "foo");
+        assert_eq!(current.get(&[5]).await?, Some("foo".into()));
 
         let mut t = store.current().await;
-        t.remove(SLOT_0, &5)?;
+        t.remove(vec![5])?;
 
-        assert_eq!(t.get::<_, String>(SLOT_0, &5).await?, None);
-        assert_eq!(t.get_unremoved::<_, String>(SLOT_0, &5).await?.unwrap(), "foo");
+        assert_eq!(t.get(&[5]).await?, None);
+        assert_eq!(t.get_unremoved(&[5]).await?, Some("foo".into()));
 
-        assert_eq!(current.get::<_, String>(SLOT_0, &5).await?.unwrap(), "foo");
-        assert_eq!(current.get_unremoved::<_, String>(SLOT_0, &5).await?.unwrap(), "foo");
+        assert_eq!(current.get(&[5]).await?, Some("foo".into()));
+        assert_eq!(current.get_unremoved(&[5]).await?, Some("foo".into()));
 
         t.commit().await?;
 
         let current = store.current().await;
-        assert_eq!(current.get::<_, String>(SLOT_0, &5).await?, None);
-        assert_eq!(current.get_unremoved::<_, String>(SLOT_0, &5).await?.unwrap(), "foo");
+        assert_eq!(current.get(&[5]).await?, None);
+        assert_eq!(current.get_unremoved(&[5]).await?, Some("foo".into()));
     }
 }
 
@@ -277,21 +275,21 @@ test! {
     async fn roll_back_transaction_on_abort(storage) -> Result<()> {
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, 2, "foo v1")?;
+        t.insert(vec![2], "foo v1".into())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, 2, "foo v2")?;
-        t.insert(SLOT_0, 3, "bar")?;
+        t.insert(vec![2], "foo v2".into())?;
+        t.insert(vec![3], "bar".into())?;
 
         t.abort().await?;
 
         let current = store.current().await;
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &2).await?.unwrap(),
-            "foo v1"
+            current.get(&[2]).await?,
+            Some("foo v1".into())
         );
-        assert_eq!(current.get::<_, String>(SLOT_0, &3).await?, None);
+        assert_eq!(current.get(&[3]).await?, None);
     }
 }
 
@@ -300,12 +298,12 @@ test! {
         let store_name = String::from(storage.name());
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, 2, "foo v1")?;
+        t.insert(vec![2], "foo v1".into())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, 2, "foo v2")?;
-        t.insert(SLOT_0, 3, "bar")?;
+        t.insert(vec![2], "foo v2".into())?;
+        t.insert(vec![3], "bar".into())?;
 
         t.commit().await?;
 
@@ -315,10 +313,10 @@ test! {
 
         let current = store.current().await;
         assert_eq!(
-            current.get::<_, String>(SLOT_0, &2).await?.unwrap(),
-            "foo v1"
+            current.get(&[2]).await?,
+            Some("foo v1".into())
         );
-        assert_eq!(current.get::<_, String>(SLOT_0, &3).await?, None);
+        assert_eq!(current.get(&[3]).await?, None);
     }
 }
 
@@ -333,12 +331,12 @@ test! {
         let value2 = vec![6, 7];
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value1.clone())?;
-        t.insert(SLOT_0, key2.clone(), value2.clone())?;
+        t.insert(key1.clone(), value1.clone())?;
+        t.insert(key2.clone(), value2.clone())?;
         t.commit().await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key2.clone(), value1.clone())?;
+        t.insert(key2.clone(), value1.clone())?;
         t.commit().await?;
 
         store.merge().await?;
@@ -346,8 +344,8 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let snapshot = store.current().await;
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &key1).await?.unwrap(), value1);
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &key2).await?.unwrap(), value1);
+        assert_eq!(snapshot.get(&key1).await?.unwrap(), value1);
+        assert_eq!(snapshot.get(&key2).await?.unwrap(), value1);
     }
 }
 
@@ -361,10 +359,10 @@ test! {
         let value2 = vec![8, 9, 10];
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value1.clone())?;
-        t.insert(SLOT_0, key2.clone(), value2.clone())?;
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &key1).await?.unwrap(), value1);
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &key2).await?.unwrap(), value2);
+        t.insert(key1.clone(), value1.clone())?;
+        t.insert(key2.clone(), value2.clone())?;
+        assert_eq!(t.get(&key1).await?.unwrap(), value1);
+        assert_eq!(t.get(&key2).await?.unwrap(), value2);
         t.commit().await?;
 
         corrupt_last_bytes(store.into_storage()?, 1).await?;
@@ -387,38 +385,38 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, "foo", 0)?;
-        t.insert(SLOT_0, "bar", 0)?;
+        t.insert("foo".into(), vec![0])?;
+        t.insert("bar".into(), vec![0])?;
         t.commit().await?;
 
         {
             let mut t = store.current().await;
-            let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+            let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
 
             {
                 let mut t = store.current().await;
-                let val_bar = t.get::<_, u32>(SLOT_0, &"bar").await?.unwrap();
-                t.insert(SLOT_0, "bar", val_bar + 10)?;
+                let val_bar = t.get("bar".as_bytes()).await?.unwrap()[0];
+                t.insert("bar".into(), vec![val_bar + 10])?;
                 t.commit().await?;
             }
 
-            t.insert(SLOT_0, "foo", val_foo + 1)?;
+            t.insert("foo".into(), vec![val_foo + 1])?;
             t.commit().await?;
         }
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 1);
-        let val_bar = t.get::<_, u32>(SLOT_0, &"bar").await?.unwrap();
+        let val_bar = t.get("bar".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_bar, 10);
 
         let storage = storage::open(&store_name).await?;
         let mut store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 1);
-        let val_bar = t.get::<_, u32>(SLOT_0, &"bar").await?.unwrap();
+        let val_bar = t.get("bar".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_bar, 10);
 
         drop(t);
@@ -428,9 +426,9 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 1);
-        let val_bar = t.get::<_, u32>(SLOT_0, &"bar").await?.unwrap();
+        let val_bar = t.get("bar".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_bar, 10);
     }
 }
@@ -441,21 +439,21 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, "foo", 0)?;
+        t.insert("foo".into(), vec![0])?;
         t.commit().await?;
 
         {
             let mut t = store.current().await;
-            let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+            let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
 
             {
                 let mut t = store.current().await;
-                let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
-                t.insert(SLOT_0, "foo", val_foo + 10)?;
+                let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
+                t.insert("foo".into(), vec![val_foo + 10])?;
                 t.commit().await?;
             }
 
-            t.insert(SLOT_0, "foo", val_foo + 1)?;
+            t.insert("foo".into(), vec![val_foo + 1])?;
             match t.commit().await {
                 Err(Error::TransactionConflict) => {},
                 instead => panic!("Expected a transaction conflict, but found {:?}", instead),
@@ -464,16 +462,16 @@ test! {
 
 
         let mut t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 10);
-        t.insert(SLOT_0, "foo", val_foo + 1)?;
+        t.insert("foo".into(), vec![val_foo + 1])?;
         t.commit().await?;
 
         let storage = storage::open(&store_name).await?;
         let mut store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 11);
 
         drop(t);
@@ -483,7 +481,7 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 11);
     }
 }
@@ -495,16 +493,16 @@ test! {
 
         {
             let mut t = store.current().await;
-            let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap_or_default();
+            let val_foo = t.get("foo".as_bytes()).await?.unwrap_or_default().first().copied().unwrap_or_default();
 
             {
                 let mut t = store.current().await;
-                let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap_or_default();
-                t.insert(SLOT_0, "foo", val_foo + 10)?;
+                let val_foo = t.get("foo".as_bytes()).await?.unwrap_or_default().first().copied().unwrap_or_default();
+                t.insert("foo".into(), vec![val_foo + 10])?;
                 t.commit().await?;
             }
 
-            t.insert(SLOT_0, "foo", val_foo + 1)?;
+            t.insert("foo".into(), vec![val_foo + 1])?;
             match t.commit().await {
                 Err(Error::TransactionConflict) => {},
                 instead => panic!("Expected a transaction conflict, but found {:?}", instead),
@@ -513,16 +511,16 @@ test! {
 
 
         let mut t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 10);
-        t.insert(SLOT_0, "foo", val_foo + 1)?;
+        t.insert("foo".into(), vec![val_foo + 1])?;
         t.commit().await?;
 
         let storage = storage::open(&store_name).await?;
         let mut store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 11);
 
         drop(t);
@@ -532,7 +530,7 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        let val_foo = t.get::<_, u32>(SLOT_0, &"foo").await?.unwrap();
+        let val_foo = t.get("foo".as_bytes()).await?.unwrap()[0];
         assert_eq!(val_foo, 11);
     }
 }

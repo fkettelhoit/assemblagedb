@@ -6,33 +6,28 @@ use crc32fast::Hasher;
 #[cfg(target_arch = "wasm32")]
 wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
-const SLOT_0: u8 = 0;
-
 test! {
     async fn timestamps(storage) -> Result<()> {
         let store_name = String::from(storage.name());
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, "key foo", "foo")?;
+        t.insert("key foo".into(), "foo".into())?;
         t.commit().await?;
 
         sleep(1).await;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, "key bar", "foo")?;
+        t.insert("key bar".into(), "foo".into())?;
         t.commit().await?;
 
         let current = store.current().await;
-        let t1 = current.versions(SLOT_0, &"key foo").await?.last().unwrap().timestamp;
-        let t2 = current.versions(SLOT_0, &"key bar").await?.last().unwrap().timestamp;
+        let t1 = current.versions("key foo".as_bytes()).await?.last().unwrap().timestamp;
+        let t2 = current.versions("key bar".as_bytes()).await?.last().unwrap().timestamp;
 
         assert!(t1 < t2);
 
         assert_eq!(
-            current
-        .versions(SLOT_0, &"key does not exist")
-        .await?
-        .last(),
+            current.versions("key does not exist".as_bytes()).await?.last(),
             None
         );
 
@@ -41,19 +36,16 @@ test! {
         let current = store.current().await;
 
         assert_eq!(
-            current.versions(SLOT_0, &"key foo").await?.last().unwrap().timestamp,
+            current.versions("key foo".as_bytes()).await?.last().unwrap().timestamp,
             t1
         );
         assert_eq!(
-            current.versions(SLOT_0, &"key bar").await?.last().unwrap().timestamp,
+            current.versions("key bar".as_bytes()).await?.last().unwrap().timestamp,
             t2
         );
 
         assert_eq!(
-            current
-        .versions(SLOT_0, &"key does not exist")
-        .await?
-        .last(),
+            current.versions("key does not exist".as_bytes()).await?.last(),
             None
         );
     }
@@ -66,7 +58,7 @@ test! {
 
         {
             let mut current = store.current().await;
-            current.insert(SLOT_0, &"key foo", 1)?;
+            current.insert("key foo".into(), vec![1])?;
             current.commit().await?;
         }
 
@@ -74,7 +66,7 @@ test! {
 
         {
             let mut current = store.current().await;
-            current.insert(SLOT_0, &"key foo", 2)?;
+            current.insert("key foo".into(), vec![2])?;
             current.commit().await?;
         }
 
@@ -82,7 +74,7 @@ test! {
 
         {
             let mut current = store.current().await;
-            current.remove(SLOT_0, &"key foo")?;
+            current.remove("key foo".into())?;
             current.commit().await?;
         }
 
@@ -90,18 +82,18 @@ test! {
 
         {
             let mut current = store.current().await;
-            current.insert(SLOT_0, &"key foo", 4)?;
+            current.insert("key foo".into(), vec![4])?;
             current.commit().await?;
         }
 
         {
             let current = store.current().await;
-            let versions = current.versions(SLOT_0, &"key foo").await?;
+            let versions = current.versions("key foo".as_bytes()).await?;
             assert_eq!(versions.len(), 4);
-            assert_eq!(current.get_version(SLOT_0, &"key foo", versions[0]).await?, Some(1));
-            assert_eq!(current.get_version(SLOT_0, &"key foo", versions[1]).await?, Some(2));
-            assert_eq!(current.get_version::<_, u32>(SLOT_0, &"key foo", versions[2]).await?, None);
-            assert_eq!(current.get_version(SLOT_0, &"key foo", versions[3]).await?, Some(4));
+            assert_eq!(current.get_version("key foo".as_bytes(), versions[0]).await?, Some(vec![1]));
+            assert_eq!(current.get_version("key foo".as_bytes(), versions[1]).await?, Some(vec![2]));
+            assert_eq!(current.get_version("key foo".as_bytes(), versions[2]).await?, None);
+            assert_eq!(current.get_version("key foo".as_bytes(), versions[3]).await?, Some(vec![4]));
         }
 
         store.merge().await?;
@@ -110,9 +102,9 @@ test! {
 
         {
             let current = store.current().await;
-            let versions = current.versions(SLOT_0, &"key foo").await?;
+            let versions = current.versions("key foo".as_bytes()).await?;
             assert_eq!(versions.len(), 1);
-            assert_eq!(current.get(SLOT_0, &"key foo").await?, Some(4));
+            assert_eq!(current.get("key foo".as_bytes()).await?, Some(vec![4]));
         }
     }
 }
@@ -125,30 +117,30 @@ test! {
         assert_eq!(current.last_updated().await?, None);
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"key foo", "foo")?;
-        let t_foo = t.versions(SLOT_0, &"key foo").await?.last().unwrap().timestamp;
+        t.insert("key foo".into(), "foo".into())?;
+        let t_foo = t.versions("key foo".as_bytes()).await?.last().unwrap().timestamp;
         assert_eq!(t.last_updated().await?.unwrap(), t_foo);
 
-        t.insert(SLOT_0, &"key bar", "bar")?;
-        let t_bar = t.versions(SLOT_0, &"key bar").await?.last().unwrap().timestamp;
+        t.insert("key bar".into(), "bar".into())?;
+        let t_bar = t.versions("key bar".as_bytes()).await?.last().unwrap().timestamp;
         assert_eq!(t.last_updated().await?.unwrap(), t_bar);
         assert_eq!(t_foo, t_bar);
 
         t.commit().await?;
 
         let current = store.current().await;
-        let t_foo1 = current.versions(SLOT_0, &"key foo").await?.last().unwrap().timestamp;
+        let t_foo1 = current.versions("key foo".as_bytes()).await?.last().unwrap().timestamp;
         assert_eq!(current.last_updated().await?.unwrap(), t_foo1);
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, &"key foo", "foo")?;
-        let t_foo = t.versions(SLOT_0, &"key foo").await?.last().unwrap().timestamp;
+        t.insert("key foo".into(), "foo".into())?;
+        let t_foo = t.versions("key foo".as_bytes()).await?.last().unwrap().timestamp;
         assert_eq!(t.last_updated().await?.unwrap(), t_foo);
 
         t.commit().await?;
 
         let current = store.current().await;
-        let t_foo2 = current.versions(SLOT_0, &"key foo").await?.last().unwrap().timestamp;
+        let t_foo2 = current.versions("key foo".as_bytes()).await?.last().unwrap().timestamp;
         assert_eq!(current.last_updated().await?.unwrap(), t_foo2);
         assert_ne!(t_foo1, t_foo2);
 
@@ -163,21 +155,21 @@ test! {
     async fn use_same_timestamp_for_whole_transaction(storage) -> Result<()> {
         let store = KvStore::open(storage).await?;
         let mut t = store.current().await;
-        t.insert(SLOT_0, &1, "foo")?;
+        t.insert(vec![1], "foo".into())?;
         sleep(1).await;
 
-        t.insert(SLOT_0, &2, "bar")?;
+        t.insert(vec![2], "bar".into())?;
         sleep(1).await;
 
-        t.insert(SLOT_0, &3, "baz")?;
+        t.insert(vec![3], "baz".into())?;
         sleep(1).await;
 
         t.commit().await?;
 
         let current = store.current().await;
-        let t1 = current.versions(SLOT_0, &1).await?.last().unwrap().timestamp;
-        let t2 = current.versions(SLOT_0, &2).await?.last().unwrap().timestamp;
-        let t3 = current.versions(SLOT_0, &3).await?.last().unwrap().timestamp;
+        let t1 = current.versions(&[1]).await?.last().unwrap().timestamp;
+        let t2 = current.versions(&[2]).await?.last().unwrap().timestamp;
+        let t3 = current.versions(&[3]).await?.last().unwrap().timestamp;
 
         assert!(t1 > 0);
         assert_eq!(t1, t2);
@@ -195,15 +187,15 @@ test! {
         assert_eq!(current.last_updated().await?, None);
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, key1.clone(), value1.clone())?;
+        t.insert(key1.clone(), value1.clone())?;
         assert_eq!(
             t.last_updated().await?.unwrap(),
-            t.versions(SLOT_0, &key1).await?.last().unwrap().timestamp
+            t.versions(&key1).await?.last().unwrap().timestamp
         );
         t.commit().await?;
 
         let current = store.current().await;
-        let t1 = current.versions(SLOT_0, &key1).await?.last().unwrap().timestamp;
+        let t1 = current.versions(&key1).await?.last().unwrap().timestamp;
         assert_eq!(current.last_updated().await?.unwrap(), t1);
     }
 }
@@ -221,7 +213,7 @@ test! {
         let mut t = store.current().await;
         assert!(t.last_updated().await?.unwrap() > timestamp_now_monotonic(0));
         assert_eq!(t.last_updated().await?.unwrap(), now_plus_10_minutes);
-        t.insert(SLOT_0, vec![5], vec![8])?;
+        t.insert(vec![5], vec![8])?;
         t.commit().await?;
 
         sleep(100).await;
@@ -235,10 +227,10 @@ test! {
         let mut store = KvStore::open(storage).await?;
 
         let mut t = store.current().await;
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &[5]).await?.unwrap(), vec![8]);
+        assert_eq!(t.get(&[5]).await?.unwrap(), vec![8]);
         assert!(t.last_updated().await?.unwrap() > timestamp_now_monotonic(0));
         assert_eq!(t.last_updated().await?.unwrap(), now_plus_10_minutes);
-        t.insert(SLOT_0, vec![5], vec![9])?;
+        t.insert(vec![5], vec![9])?;
         t.commit().await?;
 
         sleep(100).await;
@@ -248,7 +240,7 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let t = store.current().await;
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &[5]).await?.unwrap(), vec![9]);
+        assert_eq!(t.get(&[5]).await?.unwrap(), vec![9]);
         assert!(t.last_updated().await?.unwrap() > timestamp_now_monotonic(0));
         assert_eq!(t.last_updated().await?.unwrap(), now_plus_10_minutes);
         t.commit().await?;
@@ -265,12 +257,12 @@ test! {
         let snapshot = store.current().await;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, vec![5, 6, 7], vec![8, 9, 10])?;
+        t.insert(vec![5, 6, 7], vec![8, 9, 10])?;
         t.commit().await?;
 
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &[5, 6, 7]).await?, None);
+        assert_eq!(snapshot.get(&[5, 6, 7]).await?, None);
         let snapshot = store.current().await;
-        assert_eq!(snapshot.get::<_, Vec<u8>>(SLOT_0, &[5, 6, 7]).await?.unwrap(), vec![8, 9, 10]);
+        assert_eq!(snapshot.get(&[5, 6, 7]).await?.unwrap(), vec![8, 9, 10]);
     }
 }
 
@@ -283,16 +275,16 @@ test! {
         let store = KvStore::open(storage).await?;
 
         let mut t = store.current().await;
-        t.insert(SLOT_0, vec![5, 6, 7], vec![8, 9, 10])?;
+        t.insert(vec![5, 6, 7], vec![8, 9, 10])?;
 
         {
             let mut t = store.current().await;
-            assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &[5, 6, 7]).await?, None);
-            t.insert(SLOT_0, vec![11, 12], vec![13, 14])?;
+            assert_eq!(t.get(&[5, 6, 7]).await?, None);
+            t.insert(vec![11, 12], vec![13, 14])?;
             t.commit().await?;
         }
 
-        assert_eq!(t.get::<_, Vec<u8>>(SLOT_0, &[11, 12]).await?, None);
+        assert_eq!(t.get(&[11, 12]).await?, None);
         match t.commit().await {
             Err(Error::TransactionConflict) => {},
             instead => panic!("Expected a transaction conflict, but found {:?}", instead),
@@ -323,15 +315,13 @@ async fn insert_transaction_manually<S: Storage>(storage: &mut S, t: u64) -> sto
     let mut buf_timestamp = [0; BYTES_TIMESTAMP];
     buf_timestamp.copy_from_slice(&t.to_le_bytes()[0..BYTES_TIMESTAMP]);
 
-    let slot = SLOT_0;
     let k = 1;
     let v = 2;
     let mut manual_transaction_with_timestamp_in_the_future = [
         0b0000_1001,           // header for kv write, bytes key size = 1, bytes val size = 1
-        2,                     // key size
+        1,                     // key size
         1,                     // val size
         k,                     // key
-        slot,                  // slot
         v,                     // value
         0b0000_0001,           // header for commit, bytes key size = 0, bytes val size = 1
         BYTES_TIMESTAMP as u8, // val size

@@ -1,14 +1,12 @@
 //! # Versioned and transactional key-value store for native and wasm targets.
 //!
-//! This crate provides a persistent key-value store implemented as a
-//! log-structured hash table similar to
-//! [Bitcask](https://riak.com/assets/bitcask-intro.pdf). Writes of new or
-//! changed values never overwrite old entries, but are simply appended to the
-//! end of the storage. Old values are kept at earlier offsets in the storage
-//! and remain accessible. An in-memory hash table tracks the storage offsets of
-//! all keys and allows efficient reads directly from the relevant portions of
-//! the storage. A store can be merged, which discards old versions and builds a
-//! more compact representation containing only the latest value of each key.
+//! This crate provides a persistent key-value store implemented as a log-structured hash table
+//! similar to [Bitcask](https://riak.com/assets/bitcask-intro.pdf). Writes of new or changed values
+//! never overwrite old entries, but are simply appended to the end of the storage. Old values are
+//! kept at earlier offsets in the storage and remain accessible. An in-memory hash table tracks the
+//! storage offsets of all keys and allows efficient reads directly from the relevant portions of
+//! the storage. A store can be merged, which discards old versions and builds a more compact
+//! representation containing only the latest value of each key.
 //!
 //! ## Features
 //!
@@ -29,36 +27,35 @@
 //!     run!(async |storage| {
 //!         let store_name = storage.name().to_string();
 //!         let mut store = KvStore::open(storage).await?;
-//!         let slot = 0;
 //!
 //!         {
 //!             let mut current = store.current().await;
-//!             assert_eq!(current.get::<_, u8>(slot, &"key1").await?, None);
-//!             current.insert(slot, &"key1", 1)?;
+//!             assert_eq!(current.get(&[1, 2]).await?, None);
+//!             current.insert(vec![1, 2], vec![5, 6, 7])?;
 //!             current.commit().await?;
 //!         }
 //!
 //!         {
 //!             let mut current = store.current().await;
-//!             assert_eq!(current.get(slot, &"key1").await?, Some(1));
-//!             current.remove(slot, &"key1")?;
+//!             assert_eq!(current.get(&[1, 2]).await?, Some(vec![5, 6, 7]));
+//!             current.remove(vec![1, 2])?;
 //!             current.commit().await?;
 //!         }
 //!
 //!         {
 //!             let mut current = store.current().await;
-//!             assert_eq!(current.get::<_, u8>(slot, &"key1").await?, None);
-//!             current.insert(slot, &"key1", 3)?;
+//!             assert_eq!(current.get(&[1, 2]).await?, None);
+//!             current.insert(vec![1, 2], vec![8])?;
 //!             current.commit().await?;
 //!         }
 //!
 //!         {
 //!             let current = store.current().await;
-//!             let versions = current.versions(slot, &"key1").await?;
+//!             let versions = current.versions(&[1, 2]).await?;
 //!             assert_eq!(versions.len(), 3);
-//!             assert_eq!(current.get_version(slot, &"key1", versions[0]).await?, Some(1));
-//!             assert_eq!(current.get_version::<_, u8>(slot, &"key1", versions[1]).await?, None);
-//!             assert_eq!(current.get_version(slot, &"key1", versions[2]).await?, Some(3));
+//!             assert_eq!(current.get_version(&[1, 2], versions[0]).await?, Some(vec![5, 6, 7]));
+//!             assert_eq!(current.get_version(&[1, 2], versions[1]).await?, None);
+//!             assert_eq!(current.get_version(&[1, 2], versions[2]).await?, Some(vec![8]));
 //!         }
 //!
 //!         store.merge().await?;
@@ -67,23 +64,21 @@
 //!
 //!         {
 //!             let current = store.current().await;
-//!             let versions = current.versions(slot, &"key1").await?;
+//!             let versions = current.versions(&[1, 2]).await?;
 //!             assert_eq!(versions.len(), 1);
-//!             assert_eq!(current.get(slot, &"key1").await?, Some(3));
+//!             assert_eq!(current.get(&[1, 2]).await?, Some(vec![8]));
 //!         }
 //!         Ok(())
 //!     })
 //! }
 //! ```
-
-#![deny(missing_docs)]
-#![deny(broken_intra_doc_links)]
 #![deny(unsafe_code)]
+#![deny(missing_docs)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 use crate::{storage::Storage, timestamp::timestamp_now_monotonic};
 use crc32fast::Hasher;
 use log::warn;
-use serde::{de::DeserializeOwned, Serialize};
 use std::{cmp::max, collections::HashMap, mem};
 use tokio::sync::{Mutex, MutexGuard};
 
@@ -103,16 +98,6 @@ pub enum Error {
     /// The kv entry had an invalid format.
     InvalidEntryError {
         /// The reason why the entry was invalid.
-        reason: String,
-    },
-    /// The store key was invalid.
-    InvalidKeyError {
-        /// The reason why the key was invalid.
-        reason: String,
-    },
-    /// The store value was invalid.
-    InvalidValueError {
-        /// The reason why the value was invalid.
         reason: String,
     },
     /// The store key or value exceeded the maximum size supported by the store.
@@ -148,25 +133,17 @@ impl<'a> From<storage::Error> for Error {
 
 /// A versioned key-value store using a log-structured hash table.
 ///
-/// Reads and writes `serde` keys and values. All reads/writes happen through
-/// transactions. A store can be merged to discard old versions and thus store a
-/// more compact representation containing only the latest version of each
-/// key-value pair.
+/// Reads and writes `&[u8]`/`Vec<u8>` keys and values. All reads/writes happen through
+/// transactions. A store can be merged to discard old versions and thus store a more compact
+/// representation containing only the latest version of each key-value pair.
 ///
-/// Versions are also used to implement a "move to trash" behavior. Whenever a
-/// value is removed, it is not purged from storage but simply marked as
-/// removed. It remains accessible until the "trash is emptied" during the next
-/// merge. As a consequence there are 2 different methods that can read values
-/// from the store, depending on whether the trash should be included or not,
-/// [`Snapshot::get()`] (which will return `None` if the value was "moved to the
-/// trash") and [`Snapshot::get_unremoved()`] (which will return the last
-/// unremoved version if the value was "moved to the trash").
-///
-///   - Keys/values are `Serialize`/`Deserialize` and are
-///     serialized/deserialized to/from [MessagePack](https://msgpack.org/)
-///     using `rmp-serde`.
-///   - Keys are not read/written as-is, but always associated with a "slot".
-///     These slots act as the different "indexes" of a store.
+/// Versions are also used to implement a "move to trash" behavior. Whenever a value is removed, it
+/// is not purged from storage but simply marked as removed. It remains accessible until the "trash
+/// is emptied" during the next merge. As a consequence there are 2 different methods that can read
+/// values from the store, depending on whether the trash should be included or not,
+/// [`Snapshot::get()`] (which will return `None` if the value was "moved to the trash") and
+/// [`Snapshot::get_unremoved()`] (which will return the last unremoved version if the value was
+/// "moved to the trash").
 pub struct KvStore<S: Storage> {
     name: String,
     storage: Mutex<S>,
@@ -177,12 +154,11 @@ pub struct KvStore<S: Storage> {
 impl<S: Storage> KvStore<S> {
     /// Opens and reads a store from storage.
     ///
-    /// If no store exists at the storage location, a new store will be
-    /// initialized. Otherwise, the store will be read and checked for corrupted
-    /// data. In case of corruption, everything after the corrupted offset will
-    /// be truncated and later writes will overwrite the corrupted entries.
-    /// After the initial read, a hash table of all the keys in the store and
-    /// their storage offsets is kept in memory.
+    /// If no store exists at the storage location, a new store will be initialized. Otherwise, the
+    /// store will be read and checked for corrupted data. In case of corruption, everything after
+    /// the corrupted offset will be truncated and later writes will overwrite the corrupted
+    /// entries. After the initial read, a hash table of all the keys in the store and their storage
+    /// offsets is kept in memory.
     pub async fn open(storage: S) -> Result<Self> {
         let mut store = Self {
             name: String::from(storage.name()),
@@ -214,8 +190,8 @@ impl<S: Storage> KvStore<S> {
         self.len().await == 0
     }
 
-    /// Creates a transactional read-write snapshot of the store at the current
-    /// point in time, see [`Snapshot`].
+    /// Creates a transactional read-write snapshot of the store at the current point in time, see
+    /// [`Snapshot`].
     pub async fn current(&self) -> Snapshot<'_, S> {
         let latest_timestamp = *self.latest_timestamp.lock().await;
         let latest_offset = self.storage.lock().await.len();
@@ -232,10 +208,9 @@ impl<S: Storage> KvStore<S> {
 
     /// Merges and compacts the store by removing old versions.
     ///
-    /// Merging a store reclaims space by removing all versions that were
-    /// superseded by newer writes to the same key. As a side effect, a merge
-    /// "empties the trash" and ensures that removed values cannot be read and
-    /// restored anymore.
+    /// Merging a store reclaims space by removing all versions that were superseded by newer writes
+    /// to the same key. As a side effect, a merge "empties the trash" and ensures that removed
+    /// values cannot be read and restored anymore.
     pub async fn merge(&mut self) -> Result<()> {
         {
             self.storage.lock().await.flush().await?;
@@ -283,26 +258,22 @@ enum SnapshotBoundary {
     Offset(u64),
 }
 
-/// A transactional snapshot of a store at a particular point in time that
-/// caches all reads and buffers all writes in memory.
+/// A transactional snapshot of a store at a particular point in time that caches all reads and
+/// buffers all writes in memory.
 ///
-/// A transaction is a snapshot of the store at the point in time when the
-/// transaction was started. New values can be added inside the transaction, but
-/// writes from other transactions are isolated from the current transaction.
-/// Reads are cached for each transaction, so that multiple reads of the same
-/// key (and version) only have to access storage once. Writes are only
-/// persisted at the end of a successful transaction, until then all writes
-/// simply mutate an in-memory `HashMap`.
+/// A transaction is a snapshot of the store at the point in time when the transaction was started.
+/// New values can be added inside the transaction, but writes from other transactions are isolated
+/// from the current transaction. Reads are cached for each transaction, so that multiple reads of
+/// the same key (and version) only have to access storage once. Writes are only persisted at the
+/// end of a successful transaction, until then all writes simply mutate an in-memory `HashMap`.
 ///
 /// Transactions provide some basic ACID guarantees and must be
-/// [serializable](https://en.wikipedia.org/wiki/Serializability), meaning that
-/// a transaction can only be committed if it does not conflict with a
-/// previously committed transaction. If a transaction `t1` reads any key-value
-/// pair (even a version with an older timestamp) that is modified and committed
-/// in a later transaction `t2` before `t1` is comitted, `t1` will fail with an
-/// [`Error::TransactionConflict`] and must be explicitly rerun by user of the
-/// store. In other words, the following transaction behaviour will lead to a
-/// conflict:
+/// [serializable](https://en.wikipedia.org/wiki/Serializability), meaning that a transaction can
+/// only be committed if it does not conflict with a previously committed transaction. If a
+/// transaction `t1` reads any key-value pair (even a version with an older timestamp) that is
+/// modified and committed in a later transaction `t2` before `t1` is comitted, `t1` will fail with
+/// an [`Error::TransactionConflict`] and must be explicitly rerun by user of the store. In other
+/// words, the following transaction behaviour will lead to a conflict:
 ///
 /// ```text
 /// +- t1: -------+
@@ -330,89 +301,72 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         self.store.name()
     }
 
-    /// Returns the latest value associated with a slot and key from the store.
+    /// Returns the latest value associated with the key.
     ///
-    /// Returns `None` if the key is not found in the store _or if the value
-    /// associated with the key has been removed and was thus "moved to trash"_.
-    pub async fn get<K, V>(&self, slot: u8, k: &K) -> Result<Option<V>>
-    where
-        K: Serialize,
-        V: DeserializeOwned,
-    {
-        let versions = self.versions(slot, k).await?;
-        blob_to_serde_value(self.get_bytes(slot, k, versions.last().copied()).await?)
+    /// Returns `None` if the key is not found in the store _or if the value associated with the key
+    /// has been removed and was thus "moved to trash"_.
+    pub async fn get(&self, k: &[u8]) -> Result<Option<Vec<u8>>> {
+        let versions = self.versions(k).await?;
+        if let Some(version) = versions.last().copied() {
+            self.get_version(k, version).await
+        } else {
+            let mut cached_entries = self.cached_entries.lock().await;
+            cached_entries.insert(k.to_vec(), HashMap::new());
+            Ok(None)
+        }
     }
 
-    /// Returns the latest _non-removed_ value associated with a slot and key from
-    /// the store (even if the value was moved to the trash).
+    /// Returns the latest _non-removed_ value associated with the key (even if the value was moved
+    /// to the trash).
     ///
-    /// Returns `None` only if the key is not found in the store _and there is
-    /// no old version of it in the store_. If the value associated with the key
-    /// has been removed from the store but is still "in the trash", the value
-    /// in the trash will be returned. In other words, _some_ value will always
-    /// be returned unless the key has never been written to the store (since
-    /// the last merge).
-    pub async fn get_unremoved<K, V>(&self, slot: u8, k: &K) -> Result<Option<V>>
-    where
-        K: Serialize,
-        V: DeserializeOwned,
-    {
-        let versions = self.versions(slot, k).await?;
+    /// Returns `None` only if the key is not found in the store _and there is no old version of it
+    /// in the store_. If the value associated with the key has been removed from the store but is
+    /// still "in the trash", the value in the trash will be returned. In other words, _some_ value
+    /// will always be returned unless the key has never been written to the store (since the last
+    /// merge).
+    pub async fn get_unremoved(&self, k: &[u8]) -> Result<Option<Vec<u8>>> {
+        let versions = self.versions(k).await?;
         let unremoved = versions.iter().filter(|v| !v.is_removed);
-        blob_to_serde_value(self.get_bytes(slot, k, unremoved.last().copied()).await?)
+        if let Some(version) = unremoved.last().copied() {
+            self.get_version(k, version).await
+        } else {
+            let mut cached_entries = self.cached_entries.lock().await;
+            cached_entries.insert(k.to_vec(), HashMap::new());
+            Ok(None)
+        }
     }
 
-    /// Returns the specified version of the value with the given slot and key.
-    pub async fn get_version<K, V>(&self, slot: u8, k: &K, version: Version) -> Result<Option<V>>
-    where
-        K: Serialize,
-        V: DeserializeOwned,
-    {
-        blob_to_serde_value(self.get_bytes(slot, k, Some(version)).await?)
-    }
-
-    async fn get_bytes<K>(&self, slot: u8, k: &K, v: Option<Version>) -> Result<Option<Vec<u8>>>
-    where
-        K: Serialize,
-    {
-        let k = &serde_to_blob_key(slot, k)?;
+    /// Returns the specified version of the value with the given key.
+    pub async fn get_version(&self, k: &[u8], version: Version) -> Result<Option<Vec<u8>>> {
         let mut cached_entries = self.cached_entries.lock().await;
         if !cached_entries.contains_key(k) {
-            cached_entries.insert(k.clone(), HashMap::new());
+            cached_entries.insert(k.to_vec(), HashMap::new());
         }
-        if let Some(version) = v {
-            if let Some(entry) = self.transaction_entries.get(k) {
-                if !version.is_committed {
-                    return Ok(entry.clone());
-                }
-            }
-            let versions = cached_entries.get_mut(k).unwrap();
-            if let Some(entry) = versions.get(&version) {
+        if let Some(entry) = self.transaction_entries.get(k) {
+            if !version.is_committed {
                 return Ok(entry.clone());
             }
+        }
+        let versions = cached_entries.get_mut(k).unwrap();
+        if let Some(entry) = versions.get(&version) {
+            return Ok(entry.clone());
+        }
 
-            if let Some(offset) = version.offset {
-                let entry = Entry::read_from(&mut self.store.storage.lock().await, offset).await?;
-                versions.insert(version, entry.val.clone());
-                Ok(entry.val)
-            } else {
-                Ok(None)
-            }
+        if let Some(offset) = version.offset {
+            let entry = Entry::read_from(&mut self.store.storage.lock().await, offset).await?;
+            versions.insert(version, entry.val.clone());
+            Ok(entry.val)
         } else {
             Ok(None)
         }
     }
 
-    /// Returns all the versions contained in the store for the given slot and
-    /// key, ordered from earliest to latest version.
+    /// Returns all versions contained in the store for the given key, ordered from earliest to
+    /// latest version.
     ///
-    /// Since all keys are stored in memory, this operation is quite fast as it
-    /// does not need to access the persistent storage.
-    pub async fn versions<K>(&self, slot: u8, k: &K) -> Result<Vec<Version>>
-    where
-        K: Serialize,
-    {
-        let k = &serde_to_blob_key(slot, k)?;
+    /// Since all keys are stored in memory, this operation is quite fast, as there is no need to
+    /// access the persistent storage.
+    pub async fn versions(&self, k: &[u8]) -> Result<Vec<Version>> {
         let up_until = self.latest_time_or_offset();
         let mut versions: Vec<Version> =
             versions_up_until(self.store.offsets.lock().await.get(k), up_until)
@@ -430,8 +384,7 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         Ok(versions)
     }
 
-    /// Returns the timestamp of the last write to the store (in milliseconds
-    /// since the Unix epoch).
+    /// Returns the timestamp of the last write to the store (in milliseconds since the Unix epoch).
     pub async fn last_updated(&self) -> Result<Option<u64>> {
         Ok(if !self.transaction_entries.is_empty() {
             Some(self.snapshot_timestamp)
@@ -442,23 +395,16 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         })
     }
 
-    /// Returns all non-removed keys of the specified index in the store.
+    /// Returns all non-removed keys in the store.
     ///
-    /// Since all keys are stored in memory, this operation is quite fast as it
-    /// does not need to access the persistent storage.
-    pub async fn keys<K: DeserializeOwned>(&self, slot: u8) -> Result<Vec<K>> {
-        let mut keys: Vec<K> = Vec::new();
+    /// Since all keys are stored in memory, this operation is quite fast, as there is no need to
+    /// access the persistent storage.
+    pub async fn keys(&self) -> Result<Vec<Vec<u8>>> {
+        let mut keys = Vec::new();
         for (key, versions) in self.store.offsets.lock().await.iter() {
             let versions = versions_up_until(Some(versions), self.latest_time_or_offset());
-            if let Some(s) = key.last() {
-                if *s == slot && !versions.last().unwrap().is_removed {
-                    let key = rmp_serde::decode::from_read(&key[..key.len() - 1]).map_err(|e| {
-                        Error::InvalidKeyError {
-                            reason: format!("{}", e),
-                        }
-                    });
-                    keys.push(key?);
-                }
+            if !versions.last().unwrap().is_removed {
+                keys.push(key.clone());
             }
         }
         Ok(keys)
@@ -466,47 +412,25 @@ impl<'a, S: Storage> Snapshot<'a, S> {
 
     /// Inserts a key-value pair in the store, superseding older versions.
     ///
-    /// All inserts are buffered in memory and only persisted at the end of a
-    /// transaction. If an insert is later followed by another insert with the
-    /// same key in the same transaction, only the second insert is written to
-    /// storage, as from the point of view of the transaction both inserts
-    /// happen at the same time and thus only the last one for each key must be
-    /// stored as a new version in the store.
-    pub fn insert<K, V>(&mut self, slot: u8, k: K, v: V) -> Result<()>
-    where
-        K: Serialize,
-        V: Serialize,
-    {
-        let v = serde_to_blob_value(&v)?;
-        self.insert_bytes(slot, k, v)?;
-        Ok(())
-    }
-
-    fn insert_bytes<K>(&mut self, slot: u8, k: K, v: Vec<u8>) -> Result<()>
-    where
-        K: Serialize,
-    {
-        let k = serde_to_blob_key(slot, &k)?;
+    /// All inserts are buffered in memory and only persisted at the end of a transaction. If an
+    /// insert is later followed by another insert with the same key in the same transaction, only
+    /// the second insert is written to storage, as from the point of view of the transaction both
+    /// inserts happen at the same time and thus only the last one for each key must be stored as a
+    /// new version in the store.
+    pub fn insert(&mut self, k: Vec<u8>, v: Vec<u8>) -> Result<()> {
         self.transaction_entries.insert(k, Some(v));
         Ok(())
     }
 
-    /// Removes the value associated with the given slot and key from the store
-    /// (and moves it to the trash).
+    /// Removes the value associated with the key (and moves it to the trash).
     ///
-    /// All removes are buffered in memory and only persisted at the end of the
-    /// transaction. Removing a key does not purge the associated value from the
-    /// store, instead it simply adds a new version that marks the key as
-    /// removed, while keeping the old versions of the key accessible. As a
-    /// result, this acts like a "move to trash" operation and allows the value
-    /// to be restored from the trash if desired. The trash will be emptied when
-    /// the store is merged, at which point the removed value will be purged
-    /// from the store.
-    pub fn remove<K>(&mut self, slot: u8, k: K) -> Result<()>
-    where
-        K: Serialize,
-    {
-        let k = serde_to_blob_key(slot, &k)?;
+    /// All removes are buffered in memory and only persisted at the end of the transaction.
+    /// Removing a key does not purge the associated value from the store, instead it simply adds a
+    /// new version that marks the key as removed, while keeping the old versions of the key
+    /// accessible. As a result, this acts like a "move to trash" operation and allows the value to
+    /// be restored from the trash if desired. The trash will be emptied when the store is merged,
+    /// at which point the removed value will be purged from the store.
+    pub fn remove(&mut self, k: Vec<u8>) -> Result<()> {
         self.transaction_entries.insert(k, None);
         Ok(())
     }
@@ -518,8 +442,8 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         Ok(())
     }
 
-    /// Commits the current transaction, persisting all of its write operations
-    /// as new versions in the store.
+    /// Commits the current transaction, persisting all of its write operations as new versions in
+    /// the store.
     pub async fn commit(mut self) -> Result<()> {
         let entries = mem::take(&mut self.transaction_entries);
         if entries.is_empty() {
@@ -534,10 +458,9 @@ impl<'a, S: Storage> Snapshot<'a, S> {
                         .last()
                         .unwrap_or_else(|| panic!("could not find last version of key {:?}", k));
 
-                    // the value that was read in this transaction has since
-                    // been modified by another transaction and committed, the
-                    // current transaction is thus in conflict and cannot be
-                    // committed
+                    // the value that was read in this transaction has since been modified by
+                    // another transaction and committed, the current transaction is thus in
+                    // conflict and cannot be committed
                     if version.offset >= self.latest_offset {
                         return Err(Error::TransactionConflict);
                     }
@@ -649,35 +572,6 @@ async fn init_store<S: Storage>(store: &mut KvStore<S>) -> Result<()> {
     }
     store.latest_timestamp = Mutex::new(latest_timestamp);
     Ok(())
-}
-
-fn serde_to_blob_key(slot: u8, k: &impl Serialize) -> Result<Vec<u8>> {
-    rmp_serde::encode::to_vec(k)
-        .map(|mut v| {
-            v.push(slot);
-            v
-        })
-        .map_err(|e| Error::InvalidKeyError {
-            reason: format!("Unable to serialize: {}", e),
-        })
-}
-
-fn serde_to_blob_value(v: &impl Serialize) -> Result<Vec<u8>> {
-    rmp_serde::encode::to_vec(v).map_err(|e| Error::InvalidValueError {
-        reason: format!("Unable to serialize: {}", e),
-    })
-}
-
-fn blob_to_serde_value<V>(v: Option<Vec<u8>>) -> Result<Option<V>>
-where
-    V: DeserializeOwned,
-{
-    v.map(|v| {
-        rmp_serde::decode::from_read(&v[..]).map_err(|e| Error::InvalidValueError {
-            reason: format!("{}", e),
-        })
-    })
-    .transpose()
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -875,9 +769,7 @@ impl Entry {
     }
 
     fn crc(&self) -> Result<u32> {
-        if !self.is_transaction_commit() {
-            panic!("Trying to read CRC value from a non-commit entry");
-        }
+        assert!(self.is_transaction_commit(), "Trying to read CRC value from a non-commit entry");
         u32_from_bytes(self.crc.as_ref().unwrap())
     }
 

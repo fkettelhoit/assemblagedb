@@ -3,7 +3,7 @@ name = "assemblage_kv"
 description = "Versioned and Transactional KV Store for Native and Wasm Targets"
 license = "AGPL-3.0"
 repository = "https://github.com/fkettelhoit/assemblagedb/tree/main/assemblage_kv"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Frederic Kettelhoit <kettelhoit@gmail.com>"]
 edition = "2018"
 
@@ -17,8 +17,6 @@ default = ["console_error_panic_hook"]
 tokio = { version = "1.7", features = ["sync"] }
 async-trait = "0.1"
 crc32fast = "1.2"
-rmp-serde = "0.15"
-serde = "1.0"
 log = "0.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
