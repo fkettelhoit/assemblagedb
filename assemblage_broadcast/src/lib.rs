@@ -51,7 +51,9 @@ pub async fn main(req: Request, env: Env) -> Result<Response> {
     log_request(&req);
     set_panic_hook();
 
-    Router::new(())
+    let url = req.url()?.clone();
+    let headers = req.headers().clone();
+    let mut resp = Router::new(())
         .get_async("/broadcast/:broadcast_id", |_req, ctx| async move {
             if let Some(broadcast_id) = ctx.param("broadcast_id") {
                 let kv = ctx.kv(KV_BINDING)?;
@@ -105,23 +107,32 @@ pub async fn main(req: Request, env: Env) -> Result<Response> {
                 Response::error("Bad Request", STATUS_BAD_REQUEST)
             }
         })
+        .options_async("/*whatever", |req, _ctx| async move {
+            if req.method() == Method::Options {
+                Response::empty()
+            } else {
+                Response::error("Not Found", STATUS_NOT_FOUND)
+            }
+        })
         .run(req, env)
-        .await
-    /*if let Some(origin) = req.headers().get("Origin")? {
-        if origin == url.origin()
+        .await?;
+    if let Some(origin) = headers.get("Origin")? {
+        if origin == url.origin().ascii_serialization()
             || origin.starts_with("http://localhost:")
             || origin.starts_with("http://127.0.0.1:")
         {
-            resp.headers().set("Access-Control-Allow-Origin", &origin)?;
-            resp.headers().set(
+            resp.headers_mut()
+                .set("Access-Control-Allow-Origin", &origin)?;
+            resp.headers_mut().set(
                 "Access-Control-Allow-Methods",
                 "GET,PUT,POST,DELETE,OPTIONS",
             )?;
-            resp.headers().set("Access-Control-Allow-Headers", "*")?;
-            resp.headers().set("Access-Control-Max-Age", "3000")?;
+            resp.headers_mut()
+                .set("Access-Control-Allow-Headers", "*")?;
+            resp.headers_mut().set("Access-Control-Max-Age", "3000")?;
         }
     }
-    Ok(resp)*/
+    Ok(resp)
 }
 
 #[derive(Deserialize)]
@@ -162,7 +173,7 @@ async fn post_broadcast(kv: &KvStore, body: Vec<u8>, ep_id: Option<&String>) -> 
             Ok(ep) => {
                 let key = &format!("broadcast:{}:{}", broadcast_id, ep);
                 let seconds_keep_alive = 60 * 60 * 12;
-                kv.put_slice(key, &body)?
+                kv.put(key, body)?
                     .expiration(expiration + seconds_keep_alive)
                     .execute()
                     .await?;
@@ -184,8 +195,8 @@ async fn post_broadcast(kv: &KvStore, body: Vec<u8>, ep_id: Option<&String>) -> 
         .await?;
     Response::from_json(
         &json!({ "broadcast_id": broadcast_id, "token": token, "expiration": expiration }),
-    )?
-    .with_status_code(STATUS_CREATED)
+    )
+    .map(|resp| resp.with_status(STATUS_CREATED))
 }
 
 async fn put_episode(
@@ -208,7 +219,7 @@ async fn put_episode(
                 if let Ok(episode_id) = episode_id.parse::<u64>() {
                     let key = &format!("broadcast:{}:{}", broadcast_id, episode_id);
                     let seconds_keep_alive = 60 * 60 * 12;
-                    kv.put_slice(key, &body)?
+                    kv.put_bytes(key, &body)?
                         .expiration(expiration + seconds_keep_alive)
                         .execute()
                         .await?;
@@ -231,7 +242,7 @@ async fn put_episode(
                             .expiration(expiration)
                             .execute()
                             .await?;
-                        Response::empty()?.with_status_code(STATUS_CREATED)
+                        Response::empty().map(|resp| resp.with_status(STATUS_CREATED))
                     }
                 } else {
                     Response::error("Bad Request", STATUS_BAD_REQUEST)

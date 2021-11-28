@@ -6,6 +6,7 @@
 
 use std::{thread::sleep, time::Duration};
 
+use reqwest::Method;
 use serde::Deserialize;
 
 const BASE_URL: &str = if cfg!(feature = "workers-localhost") {
@@ -216,6 +217,31 @@ fn delete_episode_unauthorized() -> Result<(), reqwest::Error> {
     let resp = reqwest::blocking::get(format!("{}/broadcast/{}", BASE_URL, broadcast_id))?;
     assert_eq!(resp.status(), reqwest::StatusCode::OK);
     assert_eq!(resp.text()?, format!("[\"{}\"]", episode_id));
+    Ok(())
+}
+
+#[test]
+fn get_cors_headers() -> Result<(), reqwest::Error> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .request(Method::OPTIONS, format!("{}/broadcast", BASE_URL))
+        .send()?;
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+
+    let resp = client
+        .get(format!("{}/broadcast/12345", BASE_URL))
+        .header("Origin", BASE_URL)
+        .send()?;
+    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    println!("{:#?}", resp.headers());
+    assert_eq!(
+        resp.headers().get("Access-Control-Allow-Methods").unwrap(),
+        "GET,PUT,POST,DELETE,OPTIONS",
+    );
+    assert_eq!(
+        resp.headers().get("Access-Control-Allow-Headers").unwrap(),
+        "*"
+    );
     Ok(())
 }
 
