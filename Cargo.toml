@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "assemblage_broadcast",
     "assemblage_db",
+    "assemblage_index",
     "assemblage_kv",
     "assemblage_view",
 ]
