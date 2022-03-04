@@ -1,4 +1,4 @@
-use assemblage_index::{Db, data::ContentType};
+use assemblage_index::{data::ContentType, Db};
 use assemblage_kv::storage::PlatformStorage;
 use rand::thread_rng;
 use std::future::Future;

@@ -57,6 +57,7 @@ impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
         let mut snapshot = db.current().await;
         let mut inserted_rules = HashMap::<u32, Id>::new();
         let mut parents = HashMap::<Id, Vec<Parent>>::new();
+        let mut terminals = Vec::new();
         for (rule_number, rule) in grammar {
             let id = if let Some(&id) = inserted_rules.get(&rule_number) {
                 id
@@ -73,7 +74,10 @@ impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
             for (i, symbol) in rule.content.into_iter().enumerate() {
                 let child_id = if symbol <= 255 {
                     // terminal (= normal byte)
-                    Id::from_byte(ty, symbol as u8)
+                    let id = Id::of_byte(ty, symbol as u8);
+                    // pseudo-parent to allow finding all terminal bytes of a particular type:
+                    terminals.push(Parent::new(id, 0));
+                    id
                 } else if let Some(&id) = inserted_rules.get(&symbol) {
                     // rule
                     id
@@ -96,6 +100,10 @@ impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
             parents.dedup();
             snapshot.insert_parents(id, &parents)?;
         }
+        terminals.sort();
+        terminals.dedup();
+        snapshot.insert_parents(Id::of_content_type(ty), &terminals)?;
+        snapshot.insert_parents(Id::bottom(), &[Parent::new(Id::of_content_type(ty), 0)])?;
 
         snapshot.commit().await?;
         Ok(db)
@@ -112,13 +120,12 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         &mut self,
         other: &Snapshot<'b, S2, Rng2>,
     ) -> Result<()> {
-        let mut terminal_bytes = Vec::with_capacity(256 * 256);
-        // TODO: 0 primitives as indexes for content_types?
-        // so that I first check 255 content_types for parents? or even better _1_ bottom node?
-        for ty in 0..=1 {
-            let ty = ContentType(ty);
-            for byte in 0..=255 {
-                terminal_bytes.push(Id::from_byte(ty, byte));
+        let content_types = self.get_parents(Id::bottom()).await?.unwrap();
+        let mut terminal_bytes = Vec::with_capacity(content_types.len() * 256);
+        for Parent { id, .. } in content_types {
+            let bytes = self.get_parents(id).await?.unwrap();
+            for Parent { id, .. } in bytes {
+                terminal_bytes.push(id);
             }
         }
 
@@ -433,12 +440,15 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                 let id = Id::parse_all(&key[1..])?[0];
                 let parents = self.get_parents(id).await?.unwrap_or_default();
                 for parent in parents {
+                    if parent.id.points_to_byte() {
+                        continue;
+                    }
                     let children = self.get_children(parent.id).await?.unwrap_or_default();
                     if children.len() <= parent.index as usize
                         || children[parent.index as usize] != id
                     {
                         panic!(
-                            "Parent {} does not have child {id} at index {}",
+                            "Parent {} does not have child '{id}' at index {}",
                             parent.id, parent.index
                         );
                     }

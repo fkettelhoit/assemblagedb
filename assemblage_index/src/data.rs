@@ -59,9 +59,23 @@ impl Id {
         Ok(ids)
     }
 
+    pub fn bottom() -> Self {
+        Id::from(0)
+    }
+
+    pub fn of_content_type(ty: ContentType) -> Self {
+        if ty.0 == u8::MAX {
+            panic!("A maximum of 255 content types are supported!");
+        }
+        Id::from(ty.0 as u128 + 1)
+    }
+
     /// Returns the id that points to a single byte (which is just the UUID of the byte as a u128).
-    pub fn from_byte(ty: ContentType, byte: u8) -> Self {
-        Self(((ty.0 as u128) << 8) | byte as u128)
+    pub fn of_byte(ty: ContentType, byte: u8) -> Self {
+        if ty.0 == u8::MAX {
+            panic!("A maximum of 255 content types are supported!");
+        }
+        Self(((ty.0 as u128 + 1) << 8) | byte as u128)
     }
 
     pub fn points_to_byte(&self) -> bool {
