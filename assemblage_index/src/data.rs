@@ -1,9 +1,8 @@
 use std::{
     convert::TryFrom,
-    fmt::{self, Display, Formatter, Debug},
-    hash::Hash,
+    fmt::{self, Debug, Display, Formatter},
+    hash::Hash, sync::PoisonError,
 };
-use uuid::Uuid;
 
 /// The error type for node operations.
 #[derive(Debug)]
@@ -16,11 +15,19 @@ pub enum Error {
     InvalidParents(Vec<u8>),
     /// Caused by a failed operation of the underlying KV store.
     StoreError(assemblage_kv::Error),
+    /// The RNG mutex could not be locked
+    MutexLockError
 }
 
 impl From<assemblage_kv::Error> for Error {
     fn from(e: assemblage_kv::Error) -> Self {
         Self::StoreError(e)
+    }
+}
+
+impl<Guard> From<PoisonError<Guard>> for Error {
+    fn from(_: PoisonError<Guard>) -> Self {
+        Self::MutexLockError
     }
 }
 
@@ -32,19 +39,9 @@ pub struct ContentType(pub u8);
 
 /// Unique identifier for a node in an AssemblageDB.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Id(pub(crate) Uuid);
+pub struct Id(u128);
 
 impl Id {
-    /// Creates a new random id.
-    pub fn new() -> Self {
-        Self(Uuid::new_v4())
-    }
-
-    /// Returns the root id (a nil uuid, with all bits set to 0).
-    pub fn root() -> Self {
-        Self(Uuid::nil())
-    }
-
     pub fn num_bytes() -> usize {
         16
     }
@@ -57,46 +54,37 @@ impl Id {
         let mut ids = Vec::with_capacity(bytes.len() / bytes_per_child);
         for i in (0..bytes.len()).step_by(bytes_per_child) {
             let id_bytes: [u8; 16] = bytes[i..(i + 16)].try_into().unwrap();
-            ids.push(Id::from(Uuid::from_bytes(id_bytes)));
+            ids.push(Id::from(u128::from_be_bytes(id_bytes)));
         }
         Ok(ids)
     }
 
     /// Returns the id that points to a single byte (which is just the UUID of the byte as a u128).
     pub fn from_byte(ty: ContentType, byte: u8) -> Self {
-        Self(
-            uuid::Builder::from_u128(((ty.0 as u128) << 8) | byte as u128)
-                .set_variant(uuid::Variant::RFC4122)
-                .set_version(uuid::Version::Random)
-                .build(),
-        )
+        Self(((ty.0 as u128) << 8) | byte as u128)
     }
 
     pub fn points_to_byte(&self) -> bool {
-        (Id::from_byte(ContentType(0), 0).0.as_u128() ^ self.0.as_u128()) < 256
+        self.0 <= 0xffff
     }
 
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        self.0.as_bytes()
-    }
-}
-
-impl From<Uuid> for Id {
-    fn from(uuid: Uuid) -> Self {
-        Self(uuid)
+    pub fn as_bytes(&self) -> [u8; 16] {
+        self.0.to_be_bytes()
     }
 }
 
-impl Default for Id {
-    fn default() -> Self {
-        Self::new()
+impl From<u128> for Id {
+    fn from(id: u128) -> Self {
+        Self(id)
     }
 }
 
 impl Debug for Id {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.points_to_byte() {
-            f.debug_tuple("Id").field(&(*self.0.as_bytes().last().unwrap() as char)).finish()
+            f.debug_tuple("Id")
+                .field(&(*self.0.to_be_bytes().last().unwrap() as char))
+                .finish()
         } else {
             f.debug_tuple("Id").field(&self.0).finish()
         }
@@ -106,7 +94,7 @@ impl Debug for Id {
 impl Display for Id {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.points_to_byte() {
-            write!(f, "{}", *self.0.as_bytes().last().unwrap() as char)
+            write!(f, "{}", *self.0.to_be_bytes().last().unwrap() as char)
         } else {
             write!(f, "{}", self.0)
         }
@@ -128,17 +116,6 @@ impl Ord for Id {
 impl PartialOrd for Id {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
-    }
-}
-
-impl TryFrom<&str> for Id {
-    type Error = Error;
-
-    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
-        match Uuid::parse_str(value) {
-            Ok(uuid) => Ok(Id(uuid)),
-            Err(e) => Err(Error::InvalidId(e.to_string())),
-        }
     }
 }
 
@@ -194,7 +171,7 @@ impl Parent {
         let mut parents = Vec::with_capacity(bytes.len() / bytes_per_parent);
         for i in (0..bytes.len()).step_by(bytes_per_parent) {
             let id_bytes: [u8; 16] = bytes[i..(i + 16)].try_into().unwrap();
-            let id = Id::from(Uuid::from_bytes(id_bytes));
+            let id = Id::from(u128::from_be_bytes(id_bytes));
             let index_bytes: [u8; 4] = bytes[(i + 16)..(i + 16 + 4)].try_into().unwrap();
             let index = u32::from_be_bytes(index_bytes);
             parents.push(Parent::new(id, index));
@@ -204,7 +181,7 @@ impl Parent {
 
     pub fn as_bytes(&self) -> [u8; 20] {
         let mut bytes = [0; 20];
-        bytes[..16].copy_from_slice(self.id.0.as_bytes());
+        bytes[..16].copy_from_slice(&self.id.0.to_be_bytes());
         bytes[16..].copy_from_slice(&self.index.to_be_bytes());
         bytes
     }
@@ -228,7 +205,7 @@ impl From<Parents> for Vec<u8> {
         let bytes_per_parent = 16 + 4;
         let mut bytes = Vec::with_capacity(bytes_per_parent * parents.0.len());
         for parent in parents.0 {
-            bytes.extend_from_slice(parent.id.0.as_bytes());
+            bytes.extend_from_slice(&parent.id.0.to_be_bytes());
             bytes.extend_from_slice(&parent.index.to_be_bytes());
         }
         bytes
@@ -244,7 +221,7 @@ impl TryFrom<Vec<u8>> for Parents {
         let mut parents = Vec::new();
         while i + bytes_per_parent <= value.len() {
             let id_bytes: [u8; 16] = value[i..(i + 16)].try_into().unwrap();
-            let id = Id::from(Uuid::from_bytes(id_bytes));
+            let id = Id::from(u128::from_be_bytes(id_bytes));
             let index_bytes: [u8; 4] = value[(i + 16)..(i + 16 + 4)].try_into().unwrap();
             let index = u32::from_be_bytes(index_bytes);
             parents.push(Parent::new(id, index));

@@ -1,5 +1,6 @@
 use assemblage_index::{Db, data::ContentType};
 use assemblage_kv::storage::PlatformStorage;
+use rand::thread_rng;
 use std::future::Future;
 
 #[cfg(target_arch = "wasm32")]
@@ -10,8 +11,8 @@ const TEXT_CONTENT: ContentType = ContentType(0);
 #[test]
 fn index_text() {
     with_storage(file!(), line!(), |_| async {
-        let foobar = Db::build_from(TEXT_CONTENT, "foobar".as_bytes()).await?;
-        let barbaz = Db::build_from(TEXT_CONTENT, "babaqux".as_bytes()).await?;
+        let foobar = Db::build_from(thread_rng(), TEXT_CONTENT, "foobar".as_bytes()).await?;
+        let barbaz = Db::build_from(thread_rng(), TEXT_CONTENT, "babaqux".as_bytes()).await?;
         //let foobar = Db::build_from(TEXT_CONTENT, "foobarbaz".as_bytes()).await?;
         //let barbaz = Db::build_from(TEXT_CONTENT, "xybarqux".as_bytes()).await?;
         let mut foobar_snapshot = foobar.current().await;

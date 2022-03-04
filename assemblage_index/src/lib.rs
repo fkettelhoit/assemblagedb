@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Mutex,
+};
 
 use crate::data::{NodeKind, Parent, Result};
 use assemblage_kv::{
@@ -11,26 +14,19 @@ use sequitur::sequitur;
 pub mod data;
 pub mod sequitur;
 
-pub struct Db<S: Storage> {
+pub struct Db<S: Storage, Rng: rand::Rng> {
     kv: KvStore<S>,
+    rng: Mutex<Rng>,
 }
 
-impl<S: Storage> Db<S> {
+impl<S: Storage, Rng: rand::Rng> Db<S, Rng> {
     /// Opens and reads a DB from storage or creates it if none exists.
     ///
     /// If the storage is empty, an empty list will be automatically added as the root node.
-    pub async fn open(storage: S) -> Result<Self> {
-        let db = Self {
-            kv: KvStore::open(storage).await?,
-        };
-        /*if db.kv.is_empty().await {
-            let id = Id::root();
-            let mut snapshot = db.current().await;
-            snapshot.insert_children(id, &[])?;
-            snapshot.insert_parents(id, &[])?;
-            snapshot.commit().await?;
-        }*/
-        Ok(db)
+    pub async fn open(storage: S, rng: Rng) -> Result<Self> {
+        let kv = KvStore::open(storage).await?;
+        let rng = Mutex::new(rng);
+        Ok(Self { kv, rng })
     }
 
     /// Returns a transactional snapshot of the DB at the current point in time.
@@ -42,25 +38,32 @@ impl<S: Storage> Db<S> {
     /// multiple reads of the same node(s) only have to access storage once.
     /// Writes are only persisted at the end of a successful transaction, until
     /// then all writes simply mutate in-memory data structures.
-    pub async fn current(&self) -> Snapshot<'_, S> {
+    pub async fn current(&self) -> Snapshot<'_, S, Rng> {
         Snapshot {
             kv: self.kv.current().await,
+            rng: &self.rng,
         }
     }
 }
 
-impl Db<MemoryStorage> {
-    pub async fn build_from(ty: ContentType, bytes: &[u8]) -> Result<Self> {
+impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
+    pub async fn build_from(rng: Rng, ty: ContentType, bytes: &[u8]) -> Result<Self> {
         let grammar = sequitur(bytes);
 
         let storage = MemoryStorage::new();
-        let db = Db::open(storage).await?;
+        let db = Db::open(storage, rng).await?;
 
         let mut snapshot = db.current().await;
         let mut inserted_rules = HashMap::<u32, Id>::new();
         let mut parents = HashMap::<Id, Vec<Parent>>::new();
         for (rule_number, rule) in grammar {
-            let id = *inserted_rules.entry(rule_number).or_default();
+            let id = if let Some(&id) = inserted_rules.get(&rule_number) {
+                id
+            } else {
+                let id = snapshot.new_id()?;
+                inserted_rules.insert(rule_number, id);
+                id
+            };
             if !parents.contains_key(&id) {
                 parents.insert(id, Vec::new());
             }
@@ -70,9 +73,14 @@ impl Db<MemoryStorage> {
                 let child_id = if symbol <= 255 {
                     // terminal (= normal byte)
                     Id::from_byte(ty, symbol as u8)
+                } else if let Some(&id) = inserted_rules.get(&symbol) {
+                    // rule
+                    id
                 } else {
                     // rule
-                    *inserted_rules.entry(symbol).or_default()
+                    let id = snapshot.new_id()?;
+                    inserted_rules.insert(symbol, id);
+                    id
                 };
                 children.push(child_id);
                 parents
@@ -93,12 +101,16 @@ impl Db<MemoryStorage> {
     }
 }
 
-pub struct Snapshot<'a, S: Storage> {
+pub struct Snapshot<'a, S: Storage, Rng: rand::Rng> {
     kv: assemblage_kv::Snapshot<'a, S>,
+    rng: &'a Mutex<Rng>,
 }
 
-impl<'a, S: Storage> Snapshot<'a, S> {
-    pub async fn import<'b, S2: Storage>(&mut self, other: &Snapshot<'b, S2>) -> Result<()> {
+impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
+    pub async fn import<'b, S2: Storage, Rng2: rand::Rng>(
+        &mut self,
+        other: &Snapshot<'b, S2, Rng2>,
+    ) -> Result<()> {
         let mut terminal_bytes = Vec::with_capacity(256 * 256);
         // TODO: 0 primitives as indexes for content_types?
         // so that I first check 255 content_types for parents? or even better _1_ bottom node?
@@ -202,7 +214,7 @@ impl<'a, S: Storage> Snapshot<'a, S> {
                     } else if subseq_equals_own {
                         own_id
                     } else {
-                        let subseq_id = Id::new();
+                        let subseq_id = self.new_id()?;
                         self.insert_children(subseq_id, subseq)?;
                         subseq_id
                     };
@@ -351,282 +363,6 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         Ok(())
     }
 
-    pub async fn import2<'b, S2: Storage>(&mut self, other: &Snapshot<'b, S2>) -> Result<()> {
-        let mut terminal_bytes = Vec::with_capacity(256 * 256);
-        // TODO: 0 primitives as indexes for content_types?
-        // so that I first check 255 content_types for parents? or even better _1_ bottom node?
-        for ty in 0..=1 {
-            let ty = ContentType(ty);
-            for byte in 0..=255 {
-                terminal_bytes.push(Id::from_byte(ty, byte));
-            }
-        }
-
-        let mut own_ids_next_round = HashSet::new();
-        let mut other_ids_next_round = HashSet::new();
-
-        while let Some(id) = terminal_bytes.pop() {
-            match (self.get_parents(id).await?, other.get_parents(id).await?) {
-                (None, None) => {}
-                (Some(_), None) => {}
-                (None, Some(other_parents)) => {
-                    for Parent { id: parent_id, .. } in other_parents {
-                        other_ids_next_round.insert(parent_id);
-                        // TODO: do I need the following?
-                        self.insert_parents(id, &[])?;
-                    }
-                }
-                (Some(own_parents), Some(other_parents)) => {
-                    for Parent { id: parent_id, .. } in own_parents {
-                        own_ids_next_round.insert(parent_id);
-                    }
-                    for Parent { id: parent_id, .. } in other_parents {
-                        other_ids_next_round.insert(parent_id);
-                    }
-                }
-            }
-        }
-        let mut own_contents = HashMap::new();
-        let mut other_contents = HashMap::new();
-        while !other_ids_next_round.is_empty() {
-            for id in own_ids_next_round {
-                if !own_contents.contains_key(&id) {
-                    own_contents.insert(id, self.get_children(id).await?.unwrap());
-                }
-            }
-            for id in other_ids_next_round {
-                if !other_contents.contains_key(&id) {
-                    other_contents.insert(id, other.get_children(id).await?.unwrap());
-                }
-            }
-            own_ids_next_round = HashSet::new();
-            other_ids_next_round = HashSet::new();
-            let mut own_contents_next_round = HashMap::new();
-            let mut other_contents_next_round = HashMap::new();
-
-            // 1. for each own node, get the content and store all subsequences (which must be unique
-            //    due to digram uniqueness; each subsequence can occur in at most one node in each DB):
-            let mut own_subsequences = HashMap::new();
-            for (id, content) in own_contents.iter() {
-                // TODO: move both subsequence loops into the loops above to make sure that only the
-                // newly added contents are indexed (the rest is already indexed)
-                for i in 0..content.len() - 1 {
-                    for j in i + 2..content.len() + 1 {
-                        own_subsequences.insert(&content[i..j], (id, i, j));
-                    }
-                }
-            }
-            // 2. for each node in the other DB, check if it overlaps with any of the subsequences:
-            for (&other_id, other_content) in other_contents.iter() {
-                let mut overlap = None;
-                for i in 0..other_content.len() - 1 {
-                    for j in i + 2..other_content.len() + 1 {
-                        if let Some((&own_id, own_i, own_j)) =
-                            own_subsequences.get(&other_content[i..j])
-                        {
-                            overlap = Some(((own_id, *own_i, *own_j), (other_id, i, j)));
-                        } else {
-                            break;
-                        }
-                    }
-                    if overlap.is_some() {
-                        break;
-                    }
-                }
-                if let Some(((own_id, i, j), (other_id, other_i, other_j))) = overlap {
-                    // ...found an overlap:
-                    //
-                    // a. insert subsequence as a node and point to the overlapping nodes as
-                    //    parents:
-                    let subseq = &other_content[other_i..other_j];
-                    println!("Found match for {own_id} and {other_id}: '{subseq:?}'");
-                    let own_content = own_contents.get(&own_id).unwrap();
-                    let subseq_equals_own = j - i == own_content.len();
-                    let subseq_equals_other = other_j - other_i == other_content.len();
-                    let id_of_subsequence = if subseq_equals_own && subseq_equals_other {
-                        println!("subseq == own && subseq == other");
-                        for &child_id in own_content {
-                            let mut parents_of_child = self.get_parents(child_id).await?.unwrap();
-                            for parent in parents_of_child.iter_mut() {
-                                if parent.id == own_id {
-                                    parent.id = other_id;
-                                }
-                            }
-                            parents_of_child.sort();
-                            parents_of_child.dedup();
-                            self.insert_parents(child_id, &parents_of_child)?;
-                        }
-                        let own_parents = self.get_parents(own_id).await?.unwrap();
-                        for parent in own_parents.iter() {
-                            let mut children_of_parent =
-                                self.get_children(parent.id).await?.unwrap();
-                            children_of_parent[parent.index as usize] = other_id;
-                            self.insert_children(parent.id, &children_of_parent)?;
-                        }
-                        let other_parents = other.get_parents(other_id).await?.unwrap();
-                        self.insert_children(other_id, &other_content)?;
-                        self.remove_children(own_id)?;
-                        self.remove_parents(own_id)?;
-
-                        for own_parent in own_parents {
-                            own_ids_next_round.insert(own_parent.id);
-                        }
-                        for other_parent in other_parents {
-                            other_ids_next_round.insert(other_parent.id);
-                        }
-
-                        other_id
-                    } else if subseq_equals_other {
-                        println!("subseq == other");
-                        self.insert_children(other_id, &other_content)?;
-                        self.insert_parents(other_id, &[Parent::new(own_id, i as u32)])?;
-
-                        // b. use id of subsequence as a child of the overlapping nodes (instead of the
-                        //    subsequence directly):
-                        let mut compressed = Vec::with_capacity(own_content.len() - (j - i) + 1);
-                        compressed.extend(&own_content[..i]);
-                        compressed.push(other_id);
-                        compressed.extend(&own_content[j..]);
-                        println!("own_id {own_id}: {own_content:?} -> {compressed:?}");
-                        self.insert_children(own_id, &compressed)?;
-
-                        // shift all children of own id after subsequence to the left
-                        for (after_subsequence, &child_id) in own_content[j..].iter().enumerate() {
-                            let index_in_own = j + after_subsequence;
-                            let mut parents = self.get_parents(child_id).await?.unwrap();
-                            for parent in parents.iter_mut() {
-                                if parent.id == own_id && parent.index == index_in_own as u32 {
-                                    parent.index -= (subseq.len() - 1) as u32;
-                                }
-                            }
-                            parents.sort();
-                            self.insert_parents(child_id, &parents)?;
-                        }
-
-                        own_contents_next_round.insert(other_id, other_content.to_vec());
-                        own_contents_next_round.insert(own_id, compressed);
-
-                        own_ids_next_round.insert(own_id);
-                        let other_parents = other.get_parents(other_id).await?.unwrap();
-                        for other_parent in other_parents {
-                            other_ids_next_round.insert(other_parent.id);
-                        }
-
-                        other_id
-                    } else if subseq_equals_own {
-                        println!("subseq == own");
-                        // own sequence is identical to subsequence, no need to create a new node,
-                        // but other_id needs to be added as a parent:
-                        let mut parents = self.get_parents(own_id).await?.unwrap();
-                        parents.push(Parent::new(other_id, other_i as u32));
-                        parents.sort();
-                        parents.dedup();
-                        self.insert_parents(own_id, &parents)?;
-
-                        let own_parents = self.get_parents(own_id).await?.unwrap();
-                        for own_parent in own_parents {
-                            own_ids_next_round.insert(own_parent.id);
-                        }
-                        other_ids_next_round.insert(other_id);
-
-                        own_id
-                    } else {
-                        println!("subseq != own && subseq != other");
-                        // need to store subsequence as a new node and point to it from own_id:
-                        let id_of_subsequence = Id::new();
-                        let mut parents_of_subsequence = vec![
-                            Parent::new(own_id, i as u32),
-                            Parent::new(other_id, other_i as u32),
-                        ];
-                        parents_of_subsequence.sort();
-                        parents_of_subsequence.dedup();
-                        self.insert_parents(id_of_subsequence, &parents_of_subsequence)?;
-
-                        self.insert_children(id_of_subsequence, subseq)?;
-
-                        // b. use id of subsequence as a child of the overlapping nodes (instead of the
-                        //    subsequence directly):
-                        let mut compressed = Vec::with_capacity(own_content.len() - (j - i) + 1);
-                        compressed.extend(&own_content[..i]);
-                        compressed.push(id_of_subsequence);
-                        compressed.extend(&own_content[j..]);
-                        println!("own_id {own_id}: {own_content:?} -> {compressed:?}");
-                        self.insert_children(own_id, &compressed)?;
-
-                        // shift all children of own id after subsequence to the left
-                        for (after_subsequence, &child_id) in own_content[j..].iter().enumerate() {
-                            let index_in_own = j + after_subsequence;
-                            let mut parents = self.get_parents(child_id).await?.unwrap();
-                            for parent in parents.iter_mut() {
-                                if parent.id == own_id && parent.index == index_in_own as u32 {
-                                    parent.index -= (subseq.len() - 1) as u32;
-                                }
-                            }
-                            parents.sort();
-                            self.insert_parents(child_id, &parents)?;
-                        }
-
-                        own_contents_next_round.insert(id_of_subsequence, subseq.to_vec());
-                        own_contents_next_round.insert(own_id, compressed);
-
-                        own_ids_next_round.insert(own_id);
-                        other_ids_next_round.insert(other_id);
-
-                        id_of_subsequence
-                    };
-
-                    if !subseq_equals_other {
-                        let mut compressed =
-                            Vec::with_capacity(other_content.len() - (other_j - other_i) + 1);
-                        compressed.extend(&other_content[..other_i]);
-                        compressed.push(id_of_subsequence);
-                        compressed.extend(&other_content[other_j..]);
-                        self.insert_children(other_id, &compressed)?;
-                        println!("other_id {other_id}: {other_content:?} -> {compressed:?}");
-                        other_contents_next_round.insert(other_id, compressed);
-                    }
-
-                    // c. let the children of the overlapping part of the nodes point to the id of
-                    //    the subsequence instead:
-                    for (index_in_subseq, &child) in subseq.iter().enumerate() {
-                        let mut parents_of_child = self.get_parents(child).await?.unwrap();
-                        for parent in parents_of_child.iter_mut() {
-                            if parent.id == own_id && parent.index == (i + index_in_subseq) as u32 {
-                                parent.id = id_of_subsequence;
-                                parent.index = index_in_subseq as u32;
-                            }
-                            if parent.id == other_id
-                                && parent.index == (other_i + index_in_subseq) as u32
-                            {
-                                parent.id = id_of_subsequence;
-                                parent.index = index_in_subseq as u32;
-                            }
-                        }
-                        parents_of_child.sort();
-                        parents_of_child.dedup();
-                        self.insert_parents(child, &parents_of_child)?;
-                    }
-                } else {
-                    // ...no overlap:
-                    println!("No overlap for {other_id}, can be inserted...");
-                    self.insert_children(other_id, other_content)?;
-                    for (i, &child_id) in other_content.iter().enumerate() {
-                        let mut parents = self.get_parents(child_id).await?.unwrap();
-                        parents.push(Parent::new(other_id, i as u32));
-                        parents.sort();
-                        parents.dedup();
-                        self.insert_parents(child_id, &parents)?;
-                    }
-                    let parents = other.get_parents(other_id).await?.unwrap();
-                    other_ids_next_round.extend(parents.iter().map(|p| p.id));
-                }
-            }
-            own_contents.extend(own_contents_next_round);
-            other_contents.extend(other_contents_next_round);
-        }
-        Ok(())
-    }
-
     pub async fn print(&self) -> Result<()> {
         println!("\n***** DB PRINTOUT FOR '{}' *****", self.kv.name());
         println!("*** NODES: ***");
@@ -750,11 +486,16 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         Ok(self.kv.commit().await?)
     }
 
+    fn new_id(&mut self) -> Result<Id> {
+        let id: u128 = self.rng.lock()?.gen();
+        Ok(Id::from(id))
+    }
+
     fn insert_children(&mut self, id: Id, children: &[Id]) -> Result<()> {
-        let id_bytes = id.0.as_bytes();
+        let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Node as u8);
-        k.extend_from_slice(id_bytes);
+        k.extend_from_slice(&id_bytes);
 
         let mut v: Vec<u8> = Vec::with_capacity(Id::num_bytes() * children.len());
         for id in children {
@@ -764,19 +505,19 @@ impl<'a, S: Storage> Snapshot<'a, S> {
     }
 
     fn remove_children(&mut self, id: Id) -> Result<()> {
-        let id_bytes = id.0.as_bytes();
+        let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Node as u8);
-        k.extend_from_slice(id_bytes);
+        k.extend_from_slice(&id_bytes);
 
         Ok(self.kv.remove(k)?)
     }
 
     async fn get_children(&self, id: Id) -> Result<Option<Vec<Id>>> {
-        let id_bytes = id.0.as_bytes();
+        let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Node as u8);
-        k.extend_from_slice(id_bytes);
+        k.extend_from_slice(&id_bytes);
 
         if let Some(child_bytes) = self.kv.get(&k).await? {
             Ok(Some(Id::parse_all(&child_bytes)?))
@@ -786,10 +527,10 @@ impl<'a, S: Storage> Snapshot<'a, S> {
     }
 
     fn insert_parents(&mut self, id: Id, parents: &[Parent]) -> Result<()> {
-        let id_bytes = id.0.as_bytes();
+        let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Parents as u8);
-        k.extend_from_slice(id_bytes);
+        k.extend_from_slice(&id_bytes);
 
         let mut v: Vec<u8> = Vec::with_capacity(Parent::num_bytes() * parents.len());
         for parent in parents {
@@ -799,19 +540,19 @@ impl<'a, S: Storage> Snapshot<'a, S> {
     }
 
     fn remove_parents(&mut self, id: Id) -> Result<()> {
-        let id_bytes = id.0.as_bytes();
+        let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Parents as u8);
-        k.extend_from_slice(id_bytes);
+        k.extend_from_slice(&id_bytes);
 
         Ok(self.kv.remove(k)?)
     }
 
     async fn get_parents(&self, id: Id) -> Result<Option<Vec<Parent>>> {
-        let id_bytes = id.0.as_bytes();
+        let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Parents as u8);
-        k.extend_from_slice(id_bytes);
+        k.extend_from_slice(&id_bytes);
 
         if let Some(parent_bytes) = self.kv.get(&k).await? {
             Ok(Some(Parent::parse_all(&parent_bytes)?))
@@ -819,22 +560,6 @@ impl<'a, S: Storage> Snapshot<'a, S> {
             Ok(None)
         }
     }
-
-    /*fn insert_indexed(&mut self, ty: ContentType, byte: u8, parents: Parents) -> Result<()> {
-        let k = vec![KvKeyPrefix::Index as u8, ty.0, byte];
-        let v = parents.into();
-        Ok(self.kv.insert(k, v)?)
-    }
-
-    async fn get_indexed(&self, ty: ContentType, byte: u8) -> Result<Option<Parents>> {
-        let k = vec![KvKeyPrefix::Index as u8, ty.0, byte];
-        let v = self.kv.get(&k).await?;
-        Ok(if let Some(v) = v {
-            Some(Parents::try_from(v)?)
-        } else {
-            None
-        })
-    }*/
 }
 
 enum KvKeyPrefix {

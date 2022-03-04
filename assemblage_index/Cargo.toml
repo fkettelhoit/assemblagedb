@@ -9,13 +9,11 @@ edition = "2021"
 
 [dependencies]
 assemblage_kv = { path = "../assemblage_kv" }
+rand = "0.8"
 log = "0.4"
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-uuid = { version = "0.8", features = ["v4"] }
-
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-uuid = { version = "0.8", features = ["v4", "wasm-bindgen"] }
+getrandom = { version = "0.2", features = ["js"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1.7", features = ["time", "rt", "rt-multi-thread"] }
