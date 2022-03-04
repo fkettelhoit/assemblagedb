@@ -11,15 +11,14 @@ const TEXT_CONTENT: ContentType = ContentType(0);
 #[test]
 fn index_text() {
     with_storage(file!(), line!(), |_| async {
-        let foobar = Db::build_from(thread_rng(), TEXT_CONTENT, "foobar".as_bytes()).await?;
+        let foobar = Db::build_from(thread_rng(), TEXT_CONTENT, "bafoobar".as_bytes()).await?;
         let barbaz = Db::build_from(thread_rng(), TEXT_CONTENT, "babaqux".as_bytes()).await?;
-        //let foobar = Db::build_from(TEXT_CONTENT, "foobarbaz".as_bytes()).await?;
-        //let barbaz = Db::build_from(TEXT_CONTENT, "xybarqux".as_bytes()).await?;
+        //let foobar = Db::build_from(thread_rng(), TEXT_CONTENT, "foobarbaz".as_bytes()).await?;
+        //let barbaz = Db::build_from(thread_rng(), TEXT_CONTENT, "xybarqux".as_bytes()).await?;
         let mut foobar_snapshot = foobar.current().await;
         let barbaz_snapshot = barbaz.current().await;
         foobar_snapshot.print().await?;
         barbaz_snapshot.print().await?;
-        println!("\n\n");
         foobar_snapshot.import(&barbaz_snapshot).await?;
         foobar_snapshot.print().await?;
         foobar_snapshot.check_consistency().await?;
@@ -55,9 +54,9 @@ where
     T: FnMut(PlatformStorage) -> Fut,
     Fut: Future<Output = assemblage_index::data::Result<()>>,
 {
-    let _ignored = env_logger::builder()
+    let _ignored = env_logger::Builder::from_default_env()
         .is_test(true)
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Trace)
         .try_init();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let file = std::path::Path::new(file)

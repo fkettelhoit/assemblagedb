@@ -9,6 +9,7 @@ use assemblage_kv::{
     KvStore,
 };
 use data::{ContentType, Id, Match, Node};
+use log::{debug, info};
 use sequitur::sequitur;
 
 pub mod data;
@@ -201,7 +202,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     let (other_id, other_i, other_j) = other_subseq;
                     let own_content = self.get_children(own_id).await?.unwrap();
 
-                    println!(">> found match for {own_id} and {other_id}: '{subseq:?}'");
+                    debug!(">> found match for {own_id} and {other_id}: '{subseq:?}'");
                     assert_eq!(other_content[other_i..other_j], own_content[own_i..own_j]);
 
                     let subseq_equals_own = own_j - own_i == own_content.len();
@@ -218,28 +219,42 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         self.insert_children(subseq_id, subseq)?;
                         subseq_id
                     };
-                    println!(">> 1. subseq_id: {subseq_id}");
+                    debug!(">> 1. subseq_id: {subseq_id}");
 
                     // 2. store parents of subseq
                     if subseq_equals_own && subseq_equals_other {
-                        // nothing to do
-                        println!(">> 2.a) parents: (nothing to do)");
+                        // - change children of own id parents from own id to other id
+                        for parent in self.get_parents(own_id).await?.unwrap().iter() {
+                            let mut children_of_own_parent =
+                                self.get_children(parent.id).await?.unwrap();
+                            children_of_own_parent[parent.index as usize] = other_id;
+                            self.insert_children(parent.id, &children_of_own_parent)?;
+                            own_contents_next_iteration.insert(own_id, children_of_own_parent);
+                        }
+                        // - add all other parents to own parents
+                        let own_parents = self.get_parents(own_id).await?.unwrap();
+                        let mut parents = self.get_parents(other_id).await?.unwrap_or_default();
+                        parents.extend(own_parents);
+                        parents.sort();
+                        parents.dedup();
+                        self.insert_parents(other_id, &parents)?;
+                        debug!(">> 2.a) parents: {parents:?}");
                     } else if subseq_equals_other {
-                        // - set other id as parent of subseq
+                        // - set own id as parent of subseq
                         let mut parents = self.get_parents(other_id).await?.unwrap_or_default();
                         parents.push(Parent::new(own_id, own_i as u32));
                         parents.sort();
                         parents.dedup();
                         self.insert_parents(other_id, &parents)?;
-                        println!(">> 2.b) parents: {parents:?}");
+                        debug!(">> 2.b) parents: {parents:?}");
                     } else if subseq_equals_own {
-                        // - set own id as parent of subseq
+                        // - set other id as parent of subseq
                         let mut parents = self.get_parents(own_id).await?.unwrap();
                         parents.push(Parent::new(other_id, other_i as u32));
                         parents.sort();
                         parents.dedup();
                         self.insert_parents(own_id, &parents)?;
-                        println!(">> 2.c) parents: {parents:?}");
+                        debug!(">> 2.c) parents: {parents:?}");
                     } else {
                         // - set own id as parent of subseq
                         // - set other id as parent of subseq
@@ -249,7 +264,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         ];
                         subseq_parents.sort();
                         self.insert_parents(subseq_id, &subseq_parents)?;
-                        println!(">> 2.d) parents: {subseq_parents:?}");
+                        debug!(">> 2.d) parents: {subseq_parents:?}");
                     }
 
                     // 3. use subseq as child (use id of subseq instead of subseq directly)
@@ -260,7 +275,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         compressed.push(subseq_id);
                         compressed.extend(&own_content[own_j..]);
                         self.insert_children(own_id, &compressed)?;
-                        println!(">> 3.a) own {own_id}: {own_content:?} -> {compressed:?}");
+                        debug!(">> 3.a) own {own_id}: {own_content:?} -> {compressed:?}");
                         own_contents_next_iteration.insert(own_id, compressed);
 
                         // - shift the parent index (to own id) of all children after subseq
@@ -283,12 +298,12 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         compressed.push(subseq_id);
                         compressed.extend(&other_content[other_j..]);
                         self.insert_children(other_id, &compressed)?;
-                        println!(">> 3.b) other {other_id}: {other_content:?} -> {compressed:?}");
+                        debug!(">> 3.b) other {other_id}: {other_content:?} -> {compressed:?}");
                         other_contents_next_iteration.insert(other_id, compressed);
                     }
 
                     // 4. fix parents of children of subseq
-                    if !subseq_equals_own {
+                    if !subseq_equals_own || subseq_equals_other {
                         // - point to subseq instead of own id
                         // - point to subseq id instead of other id
                         for (subseq_i, &child) in subseq.iter().enumerate() {
@@ -310,6 +325,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                             parents_of_subseq_child.sort();
                             parents_of_subseq_child.dedup();
                             self.insert_parents(child, &parents_of_subseq_child)?;
+                            debug!(">> 4. parents of {child}: {parents_of_subseq_child:?}");
                         }
                     }
 
@@ -330,22 +346,30 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     } else {
                         other_ids_next_iteration.insert(other_id);
                     }
+
+                    // 6. remove own id if it was replaced by other id
+                    if subseq_equals_own && subseq_equals_other {
+                        self.remove_children(own_id)?;
+                        self.remove_parents(own_id)?;
+                    }
                 } else {
-                    println!(">>>> no overlap for {other_id}, can be inserted...");
                     let mut all_children_previously_inserted = true;
                     for (i, &child_id) in other_content.iter().enumerate() {
-                        let parents = self.get_parents(child_id).await?;
-                        if let Some(mut parents) = parents {
-                            parents.push(Parent::new(other_id, i as u32));
-                            parents.sort();
-                            parents.dedup();
-                            self.insert_parents(child_id, &parents)?;
-                        } else {
+                        if !child_id.points_to_byte()
+                            && self.get_children(child_id).await?.is_none()
+                        {
+                            debug!(">>>> child {child_id} of {other_id} is still missing");
                             all_children_previously_inserted = false;
                             break;
                         }
+                        let mut parents = self.get_parents(child_id).await?.unwrap_or_default();
+                        parents.push(Parent::new(other_id, i as u32));
+                        parents.sort();
+                        parents.dedup();
+                        self.insert_parents(child_id, &parents)?;
                     }
                     if all_children_previously_inserted {
+                        debug!(">>>> no overlap for {other_id}, can be inserted");
                         let parents = other.get_parents(other_id).await?.unwrap();
                         other_ids_next_iteration.extend(parents.iter().map(|p| p.id));
                         self.insert_children(other_id, &other_content)?;
@@ -364,21 +388,21 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
     }
 
     pub async fn print(&self) -> Result<()> {
-        println!("\n***** DB PRINTOUT FOR '{}' *****", self.kv.name());
-        println!("*** NODES: ***");
+        info!("***** DB PRINTOUT FOR '{}' *****", self.kv.name());
+        info!("*** NODES: ***");
         for key in self.kv.keys().await? {
             if key[0] == KvKeyPrefix::Node as u8 {
                 let id = Id::parse_all(&key[1..])?[0];
                 let children = self.get_children(id).await?;
-                println!("{id} -> {:?}", children);
+                info!("{id} -> {:?}", children);
             }
         }
-        println!("*** PARENTS: ***");
+        info!("*** PARENTS: ***");
         for key in self.kv.keys().await? {
             if key[0] == KvKeyPrefix::Parents as u8 {
                 let id = Id::parse_all(&key[1..])?[0];
                 let parents = self.get_parents(id).await?;
-                println!("{id} -> {:?}", parents);
+                info!("{id} -> {:?}", parents);
             }
         }
         Ok(())
@@ -401,7 +425,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         panic!("Child {i} with id {child_id} of {id} is missing!");
                     }
                 }
-                println!("{id} -> {:?}", children);
+                info!("{id} -> {:?}", children);
             }
         }
         for key in self.kv.keys().await? {
