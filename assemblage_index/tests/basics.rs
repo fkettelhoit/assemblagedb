@@ -10,12 +10,15 @@ const TEXT_CONTENT: ContentType = ContentType(0);
 #[test]
 fn index_text() {
     with_storage(file!(), line!(), |_| async {
-        let foobar = Db::build_from(TEXT_CONTENT, "foobarbaz".as_bytes()).await?;
-        let barbaz = Db::build_from(TEXT_CONTENT, "xybarqux".as_bytes()).await?;
+        let foobar = Db::build_from(TEXT_CONTENT, "foobar".as_bytes()).await?;
+        let barbaz = Db::build_from(TEXT_CONTENT, "babaqux".as_bytes()).await?;
+        //let foobar = Db::build_from(TEXT_CONTENT, "foobarbaz".as_bytes()).await?;
+        //let barbaz = Db::build_from(TEXT_CONTENT, "xybarqux".as_bytes()).await?;
         let mut foobar_snapshot = foobar.current().await;
         let barbaz_snapshot = barbaz.current().await;
         foobar_snapshot.print().await?;
         barbaz_snapshot.print().await?;
+        println!("\n\n");
         foobar_snapshot.import(&barbaz_snapshot).await?;
         foobar_snapshot.print().await?;
         foobar_snapshot.check_consistency().await?;
