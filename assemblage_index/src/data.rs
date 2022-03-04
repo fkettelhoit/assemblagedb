@@ -1,6 +1,6 @@
 use std::{
     convert::TryFrom,
-    fmt::{self, Display, Formatter},
+    fmt::{self, Display, Formatter, Debug},
     hash::Hash,
 };
 use uuid::Uuid;
@@ -10,7 +10,9 @@ use uuid::Uuid;
 pub enum Error {
     /// The id is not a valid uuid.
     InvalidId(String),
-    /// The specified bytes could not be deserialized into a collection of parents.
+    /// The specified bytes could not be deserialized into a list of ids.
+    InvalidIds(Vec<u8>),
+    /// The specified bytes could not be deserialized into a list of parents.
     InvalidParents(Vec<u8>),
     /// Caused by a failed operation of the underlying KV store.
     StoreError(assemblage_kv::Error),
@@ -24,8 +26,12 @@ impl From<assemblage_kv::Error> for Error {
 
 pub type Result<R> = std::result::Result<R, Error>;
 
+/// Used to distinguish bytes of different types (e.g. utf-8 text, png, ...).
+#[derive(Debug, Clone, Copy)]
+pub struct ContentType(pub u8);
+
 /// Unique identifier for a node in an AssemblageDB.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Id(pub(crate) Uuid);
 
 impl Id {
@@ -37,6 +43,41 @@ impl Id {
     /// Returns the root id (a nil uuid, with all bits set to 0).
     pub fn root() -> Self {
         Self(Uuid::nil())
+    }
+
+    pub fn num_bytes() -> usize {
+        16
+    }
+
+    pub fn parse_all(bytes: &[u8]) -> Result<Vec<Id>> {
+        let bytes_per_child = Self::num_bytes();
+        if bytes.len() % bytes_per_child != 0 {
+            return Err(Error::InvalidIds(bytes.to_vec()));
+        }
+        let mut ids = Vec::with_capacity(bytes.len() / bytes_per_child);
+        for i in (0..bytes.len()).step_by(bytes_per_child) {
+            let id_bytes: [u8; 16] = bytes[i..(i + 16)].try_into().unwrap();
+            ids.push(Id::from(Uuid::from_bytes(id_bytes)));
+        }
+        Ok(ids)
+    }
+
+    /// Returns the id that points to a single byte (which is just the UUID of the byte as a u128).
+    pub fn from_byte(ty: ContentType, byte: u8) -> Self {
+        Self(
+            uuid::Builder::from_u128(((ty.0 as u128) << 8) | byte as u128)
+                .set_variant(uuid::Variant::RFC4122)
+                .set_version(uuid::Version::Random)
+                .build(),
+        )
+    }
+
+    pub fn points_to_byte(&self) -> bool {
+        (Id::from_byte(ContentType(0), 0).0.as_u128() ^ self.0.as_u128()) < 256
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
     }
 }
 
@@ -52,9 +93,23 @@ impl Default for Id {
     }
 }
 
+impl Debug for Id {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        if self.points_to_byte() {
+            f.debug_tuple("Id").field(&(*self.0.as_bytes().last().unwrap() as char)).finish()
+        } else {
+            f.debug_tuple("Id").field(&self.0).finish()
+        }
+    }
+}
+
 impl Display for Id {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        if self.points_to_byte() {
+            write!(f, "{}", *self.0.as_bytes().last().unwrap() as char)
+        } else {
+            write!(f, "{}", self.0)
+        }
     }
 }
 
@@ -87,34 +142,28 @@ impl TryFrom<&str> for Id {
     }
 }
 
-pub enum Node {
-    Content(Vec<u8>),
-    List(Vec<Id>),
+#[derive(Debug, Clone)]
+pub struct Node {
+    id: Id,
+    kind: NodeKind,
+    parents: Vec<Parent>,
 }
 
-enum NodeSerializerSuffix {
-    Content = 0,
-    List = 1,
-}
-
-impl From<Node> for Vec<u8> {
-    fn from(n: Node) -> Self {
-        match n {
-            Node::Content(mut bytes) => {
-                bytes.push(NodeSerializerSuffix::Content as u8);
-                bytes
-            }
-            Node::List(ids) => {
-                let id_bytes = 16;
-                let mut bytes = Vec::with_capacity(id_bytes * ids.len() + 1);
-                for id in ids {
-                    bytes.extend_from_slice(id.0.as_bytes());
-                }
-                bytes.push(NodeSerializerSuffix::List as u8);
-                bytes
-            }
-        }
+impl Node {
+    pub fn new(id: Id, kind: NodeKind, parents: Vec<Parent>) -> Self {
+        Self { id, kind, parents }
     }
+
+    pub fn similar(&self) -> Vec<Match> {
+        todo!()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum NodeKind {
+    Cyclic(Id),
+    List(Vec<Node>),
+    Byte(u8),
 }
 
 /// A node that contains a child node at the specified index.
@@ -131,6 +180,33 @@ impl Parent {
     /// the specified index.
     pub fn new(id: Id, index: u32) -> Self {
         Self { id, index }
+    }
+
+    pub fn num_bytes() -> usize {
+        16 + 4
+    }
+
+    pub fn parse_all(bytes: &[u8]) -> Result<Vec<Parent>> {
+        let bytes_per_parent = Self::num_bytes();
+        if bytes.len() % bytes_per_parent != 0 {
+            return Err(Error::InvalidIds(bytes.to_vec()));
+        }
+        let mut parents = Vec::with_capacity(bytes.len() / bytes_per_parent);
+        for i in (0..bytes.len()).step_by(bytes_per_parent) {
+            let id_bytes: [u8; 16] = bytes[i..(i + 16)].try_into().unwrap();
+            let id = Id::from(Uuid::from_bytes(id_bytes));
+            let index_bytes: [u8; 4] = bytes[(i + 16)..(i + 16 + 4)].try_into().unwrap();
+            let index = u32::from_be_bytes(index_bytes);
+            parents.push(Parent::new(id, index));
+        }
+        Ok(parents)
+    }
+
+    pub fn as_bytes(&self) -> [u8; 20] {
+        let mut bytes = [0; 20];
+        bytes[..16].copy_from_slice(self.id.0.as_bytes());
+        bytes[16..].copy_from_slice(&self.index.to_be_bytes());
+        bytes
     }
 }
 

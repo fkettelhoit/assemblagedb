@@ -95,6 +95,28 @@ test! {
 }
 
 test! {
+    async fn insert_and_get_empty_value(storage) -> Result<()> {
+        let store = KvStore::open(storage).await?;
+        let current = store.current().await;
+        assert_eq!(current.get(&[1]).await?, None);
+
+        let mut t = store.current().await;
+        t.insert(vec![1], vec![])?;
+        t.commit().await?;
+
+        let current = store.current().await;
+        assert_eq!(current.get(&[1]).await?, Some(vec![]));
+
+        let mut t = store.current().await;
+        t.remove(vec![1])?;
+        t.commit().await?;
+
+        let current = store.current().await;
+        assert_eq!(current.get(&[1]).await?, None);
+    }
+}
+
+test! {
     async fn put_get_and_remove(storage) -> Result<()> {
         let store_name = String::from(storage.name());
         let store = KvStore::open(storage).await?;

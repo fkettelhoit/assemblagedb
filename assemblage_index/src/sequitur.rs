@@ -20,21 +20,30 @@ impl DigramInRule {
 
 #[derive(Debug)]
 pub(crate) struct Rule {
-    content: Vec<RuleOrTerminal>,
+    pub(crate) content: Vec<RuleOrTerminal>,
     pointers_to_rule: usize,
 }
 
 pub(crate) fn sequitur(bytes: &[u8]) -> HashMap<u32, Rule> {
     let main_rule_num = 256;
+    if bytes.len() < 4 {
+        let mut grammar = HashMap::new();
+        let rule = Rule {
+            content: bytes.iter().copied().map(|b| b as u32).collect(),
+            pointers_to_rule: 1,
+        };
+        grammar.insert(main_rule_num, rule);
+        return grammar;
+    }
     let mut rule_counter = main_rule_num + 1;
     let mut rules = HashMap::<u32, Rule>::new();
     let mut digrams = HashMap::<Digram, DigramInRule>::new();
-    let mut main = Rule {
-        content: vec![0 as u32],
-        pointers_to_rule: 1,
-    };
     let mut pushed_back = vec![];
     let mut bytes = bytes.iter().copied().map(|b| b as u32);
+    let mut main = Rule {
+        content: vec![bytes.next().unwrap()],
+        pointers_to_rule: 1,
+    };
     while let Some(byte) = pushed_back.pop().or_else(|| bytes.next()) {
         let digram = [*main.content.last().unwrap(), byte];
         let index_in_main_rule = main.content.len() - 1;
@@ -51,7 +60,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> HashMap<u32, Rule> {
                     main.content.push(byte as u32);
                 }
                 (main, Some(rule_num)) if rules.get(&rule_num).unwrap().content.len() == 2 => {
-                    // digram is the complete rule, so replace diagram with rule
+                    // digram is the complete rule, so replace digram with rule
                     let digram_in_main = DigramInRule::new(main_rule_num, index_in_main_rule);
                     let needs_pushback = enforce_digram_uniqueness(
                         &mut digrams,

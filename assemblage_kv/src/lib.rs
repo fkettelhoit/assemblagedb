@@ -401,10 +401,18 @@ impl<'a, S: Storage> Snapshot<'a, S> {
     /// access the persistent storage.
     pub async fn keys(&self) -> Result<Vec<Vec<u8>>> {
         let mut keys = Vec::new();
-        for (key, versions) in self.store.offsets.lock().await.iter() {
-            let versions = versions_up_until(Some(versions), self.latest_time_or_offset());
-            if !versions.last().unwrap().is_removed {
+        // TODO: write test for this, as previously only persisted keys were returned
+        for (key, value) in self.transaction_entries.iter() {
+            if value.is_some() {
                 keys.push(key.clone());
+            }
+        }
+        for (key, versions) in self.store.offsets.lock().await.iter() {
+            if !self.transaction_entries.contains_key(key) {
+                let versions = versions_up_until(Some(versions), self.latest_time_or_offset());
+                if !versions.last().unwrap().is_removed {
+                    keys.push(key.clone());
+                }
             }
         }
         Ok(keys)
@@ -709,7 +717,7 @@ impl Entry {
 
         let is_transaction = bytes_key_size == 0;
         let (key, val, crc) = if is_transaction {
-            if val_size > 0 {
+            if bytes_val_size > 0 {
                 let bytes_content = key_size + val_size + BYTES_CRC as u32;
                 let content = storage.read(offset_content, bytes_content).await?;
                 if content.len() < val_size as usize {
@@ -734,7 +742,7 @@ impl Entry {
                 });
             }
             let key = Some(content[..key_size as usize].to_vec());
-            if val_size > 0 {
+            if bytes_val_size > 0 {
                 (key, Some(content[key_size as usize..].to_vec()), None)
             } else {
                 (key, None, None)
@@ -769,7 +777,10 @@ impl Entry {
     }
 
     fn crc(&self) -> Result<u32> {
-        assert!(self.is_transaction_commit(), "Trying to read CRC value from a non-commit entry");
+        assert!(
+            self.is_transaction_commit(),
+            "Trying to read CRC value from a non-commit entry"
+        );
         u32_from_bytes(self.crc.as_ref().unwrap())
     }
 
