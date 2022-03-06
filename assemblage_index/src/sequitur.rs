@@ -24,7 +24,7 @@ pub(crate) struct Rule {
     pointers_to_rule: usize,
 }
 
-pub(crate) fn sequitur(bytes: &[u8]) -> HashMap<u32, Rule> {
+pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
     let main_rule_num = 256;
     if bytes.len() < 4 {
         let mut grammar = HashMap::new();
@@ -33,7 +33,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> HashMap<u32, Rule> {
             pointers_to_rule: 1,
         };
         grammar.insert(main_rule_num, rule);
-        return grammar;
+        return (main_rule_num, grammar);
     }
     let mut rule_counter = main_rule_num + 1;
     let mut rules = HashMap::<u32, Rule>::new();
@@ -114,7 +114,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> HashMap<u32, Rule> {
         }
     }
     rules.insert(main_rule_num, main);
-    rules
+    (main_rule_num, rules)
 }
 
 fn enforce_digram_uniqueness(
@@ -346,9 +346,9 @@ mod tests {
     }
 
     fn expect_sequitur_result(s: &str, expected: HashMap<u32, &str>) {
-        let rules = sequitur(s.as_bytes());
+        let (main_rule_num, rules) = sequitur(s.as_bytes());
         if expected.len() != rules.len() {
-            pretty_print_rules(&rules);
+            pretty_print_rules(main_rule_num, &rules);
             panic!(
                 "Expected {} rules, but found {}",
                 expected.len(),
@@ -356,8 +356,8 @@ mod tests {
             );
         }
         for (r, expected) in expected {
-            if let Some(rule) = rules.get(&(r + 255)) {
-                let pretty = prettify(rule);
+            if let Some(rule) = rules.get(&(r + main_rule_num - 1)) {
+                let pretty = prettify(main_rule_num, rule);
                 assert_eq!(expected, pretty);
             } else {
                 panic!("No rule for {}, expected {}", r, expected);
@@ -365,16 +365,16 @@ mod tests {
         }
     }
 
-    fn pretty_print_rules(rules: &HashMap<u32, Rule>) {
+    fn pretty_print_rules(main_rule_num: u32, rules: &HashMap<u32, Rule>) {
         let mut keys: Vec<u32> = rules.keys().copied().collect();
         keys.sort();
         for k in keys {
-            let rule = prettify(rules.get(&k).unwrap());
-            println!("{} -> {}", k - 255, rule);
+            let rule = prettify(main_rule_num, rules.get(&k).unwrap());
+            println!("{} -> {}", k + 1 - main_rule_num, rule);
         }
     }
 
-    fn prettify(rule: &Rule) -> String {
+    fn prettify(main_rule_num: u32, rule: &Rule) -> String {
         let mut printable_rule = "".to_string();
         for rule_or_terminal in rule.content.clone() {
             if rule_or_terminal < 256 {
@@ -382,7 +382,7 @@ mod tests {
                     printable_rule.push(rule_or_terminal as u8 as char);
                 }
             } else {
-                printable_rule += &format!("{}", rule_or_terminal - 255);
+                printable_rule += &format!("{}", rule_or_terminal + 1 - main_rule_num);
             }
             if rule_or_terminal > 0 {
                 printable_rule.push(',');

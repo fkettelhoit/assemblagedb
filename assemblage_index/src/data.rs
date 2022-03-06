@@ -135,26 +135,19 @@ impl PartialOrd for Id {
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    id: Id,
-    kind: NodeKind,
-    parents: Vec<Parent>,
+    pub id: Id,
+    pub children: Vec<Node>,
+    pub parents: Vec<Parent>,
 }
 
 impl Node {
-    pub fn new(id: Id, kind: NodeKind, parents: Vec<Parent>) -> Self {
-        Self { id, kind, parents }
+    pub fn new(id: Id, children: Vec<Node>, parents: Vec<Parent>) -> Self {
+        Self { id, children, parents }
     }
 
     pub fn similar(&self) -> Vec<Match> {
         todo!()
     }
-}
-
-#[derive(Debug, Clone)]
-pub enum NodeKind {
-    Cyclic(Id),
-    List(Vec<Node>),
-    Byte(u8),
 }
 
 /// A node that contains a child node at the specified index.

@@ -3,12 +3,12 @@ use std::{
     sync::Mutex,
 };
 
-use crate::data::{NodeKind, Parent, Result};
+use crate::data::{Parent, Result};
 use assemblage_kv::{
     storage::{MemoryStorage, Storage},
     KvStore,
 };
-use data::{ContentType, Id, Match, Node};
+use data::{ContentType, Id, Match};
 use log::{debug, info};
 use sequitur::sequitur;
 
@@ -48,8 +48,8 @@ impl<S: Storage, Rng: rand::Rng> Db<S, Rng> {
 }
 
 impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
-    pub async fn build_from(rng: Rng, ty: ContentType, bytes: &[u8]) -> Result<Self> {
-        let grammar = sequitur(bytes);
+    pub async fn build_from(rng: Rng, ty: ContentType, bytes: &[u8]) -> Result<(Id, Self)> {
+        let (main_rule, grammar) = sequitur(bytes);
 
         let storage = MemoryStorage::new();
         let db = Db::open(storage, rng).await?;
@@ -106,7 +106,9 @@ impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
         snapshot.insert_parents(Id::bottom(), &[Parent::new(Id::of_content_type(ty), 0)])?;
 
         snapshot.commit().await?;
-        Ok(db)
+
+        let &main_id = inserted_rules.get(&main_rule).unwrap();
+        Ok((main_id, db))
     }
 }
 
@@ -141,8 +143,6 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                 (None, Some(other_parents)) => {
                     for Parent { id: parent_id, .. } in other_parents {
                         other_ids.insert(parent_id);
-                        // TODO: do I need the following?
-                        self.insert_parents(id, &[])?;
                     }
                 }
                 (Some(own_parents), Some(other_parents)) => {
@@ -156,9 +156,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
             }
         }
 
-        let mut counter = 0;
         while !other_ids.is_empty() {
-            counter += 1;
             let mut own_ids_next_iteration = HashSet::new();
             let mut other_ids_next_iteration = HashSet::new();
             let mut own_contents_next_iteration = HashMap::new();
@@ -387,9 +385,6 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
             other_ids = other_ids_next_iteration;
             own_contents.extend(own_contents_next_iteration);
             other_contents.extend(other_contents_next_iteration);
-            if counter >= 15 {
-                panic!("endless loop?");
-            }
         }
         Ok(())
     }
@@ -464,55 +459,8 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         self.import(&other_snapshot).await
     }*/
 
-    pub async fn search(&self, ty: ContentType, term: &[u8]) -> Result<Vec<Match>> {
-        //let term = Db::build_from(ty, term).await?;
-        /*let grammar = sequitur(term);
-        for byte in term.iter().copied() {
-            let id = Id::from_byte(ty, byte);
-
-        }*/
+    pub async fn search(&self, _ty: ContentType, _term: &[u8]) -> Result<Vec<Match>> {
         todo!()
-    }
-
-    pub async fn get(&self, id: Id) -> Result<Option<Node>> {
-        if let Some(mut unvisited) = self.get_children(id).await? {
-            // 1. build a map from ids to their children:
-            let mut children = HashMap::new();
-            let mut parents = HashMap::new();
-            let mut incomplete_nodes = vec![];
-            while let Some(id) = unvisited.pop() {
-                incomplete_nodes.push(id);
-                if !children.contains_key(&id) {
-                    parents.insert(id, self.get_parents(id).await?.unwrap());
-                    if !id.points_to_byte() {
-                        let child_ids = self.get_children(id).await?.unwrap();
-                        unvisited.extend(&child_ids);
-                        children.insert(id, child_ids);
-                    }
-                }
-            }
-            // 2. iterate through incomplete nodes bottom up, so that children already exist:
-            let mut nodes: HashMap<Id, Node> = HashMap::new();
-            while let Some(id) = incomplete_nodes.pop() {
-                let node = if id.points_to_byte() {
-                    NodeKind::Byte(*id.as_bytes().last().unwrap())
-                } else {
-                    let children = children
-                        .get(&id)
-                        .unwrap()
-                        .iter()
-                        .map(|id| nodes.get(id).expect("Child nodes should already exist"))
-                        .cloned()
-                        .collect();
-                    NodeKind::List(children)
-                };
-                let parents = parents.get(&id).unwrap();
-                nodes.insert(id, Node::new(id, node, parents.clone()));
-            }
-            Ok(nodes.remove(&id))
-        } else {
-            Ok(None)
-        }
     }
 
     /// Commits the current transaction, thereby persisting all of its changes.
@@ -547,7 +495,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         Ok(self.kv.remove(k)?)
     }
 
-    async fn get_children(&self, id: Id) -> Result<Option<Vec<Id>>> {
+    pub async fn get_children(&self, id: Id) -> Result<Option<Vec<Id>>> {
         let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Node as u8);
@@ -582,7 +530,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         Ok(self.kv.remove(k)?)
     }
 
-    async fn get_parents(&self, id: Id) -> Result<Option<Vec<Parent>>> {
+    pub async fn get_parents(&self, id: Id) -> Result<Option<Vec<Parent>>> {
         let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
         k.push(KvKeyPrefix::Parents as u8);
