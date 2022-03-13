@@ -138,10 +138,14 @@ async fn check_grammar<'a, S: Storage, Rng: rand::Rng>(
     let main_rule = grammar
         .get(&0)
         .expect("Grammar does not contain a main rule with number 0");
-    let node = db
-        .get_children(id)
+    let tree = db
+        .get(id)
         .await
         .expect(&format!("Could not find main id {id}"))
+        .expect(&format!("Could not find main id {id}"));
+    let node = tree
+        .children
+        .get(&id)
         .expect(&format!("Could not find main id {id}"));
     let mut mapping = HashMap::new();
     let mut comparisons = vec![(0, main_rule, node)];
@@ -167,7 +171,7 @@ async fn check_grammar<'a, S: Storage, Rng: rand::Rng>(
                                 return Err(format!("{rule_pretty} ({symbol_index}): Expected {rule_num} to match {expected_id}, but found {next}"));
                             }
                         } else if let Some(rule) = grammar.get(rule_num) {
-                            let next_children = db.get_children(next).await.unwrap().unwrap();
+                            let next_children = tree.children.get(&next).unwrap();
                             mapping.insert(*rule_num, next);
                             comparisons.push((*rule_num, rule, next_children));
                         } else {

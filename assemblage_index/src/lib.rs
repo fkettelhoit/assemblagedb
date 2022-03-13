@@ -8,7 +8,7 @@ use assemblage_kv::{
     storage::{MemoryStorage, Storage},
     KvStore,
 };
-use data::{ContentType, Id, Match};
+use data::{ContentType, Error, Id, Match, NodeTree};
 use log::{debug, info};
 use sequitur::sequitur;
 
@@ -49,66 +49,12 @@ impl<S: Storage, Rng: rand::Rng> Db<S, Rng> {
 
 impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
     pub async fn build_from(rng: Rng, ty: ContentType, bytes: &[u8]) -> Result<(Id, Self)> {
-        let (main_rule, grammar) = sequitur(bytes);
-
         let storage = MemoryStorage::new();
         let db = Db::open(storage, rng).await?;
-
         let mut snapshot = db.current().await;
-        let mut inserted_rules = HashMap::<u32, Id>::new();
-        let mut parents = HashMap::<Id, Vec<Parent>>::new();
-        let mut terminals = Vec::new();
-        for (rule_number, rule) in grammar {
-            let id = if let Some(&id) = inserted_rules.get(&rule_number) {
-                id
-            } else {
-                let id = snapshot.new_id()?;
-                inserted_rules.insert(rule_number, id);
-                id
-            };
-            if !parents.contains_key(&id) {
-                parents.insert(id, Vec::new());
-            }
-
-            let mut children = Vec::with_capacity(rule.content.len());
-            for (i, symbol) in rule.content.into_iter().enumerate() {
-                let child_id = if symbol <= 255 {
-                    // terminal (= normal byte)
-                    let id = Id::of_byte(ty, symbol as u8);
-                    // pseudo-parent to allow finding all terminal bytes of a particular type:
-                    terminals.push(Parent::new(id, 0));
-                    id
-                } else if let Some(&id) = inserted_rules.get(&symbol) {
-                    // rule
-                    id
-                } else {
-                    // rule
-                    let id = snapshot.new_id()?;
-                    inserted_rules.insert(symbol, id);
-                    id
-                };
-                children.push(child_id);
-                parents
-                    .entry(child_id)
-                    .or_default()
-                    .push(Parent::new(id, i as u32));
-            }
-            snapshot.insert_children(id, &children)?;
-        }
-        for (id, mut parents) in parents {
-            parents.sort();
-            parents.dedup();
-            snapshot.insert_parents(id, &parents)?;
-        }
-        terminals.sort();
-        terminals.dedup();
-        snapshot.insert_parents(Id::of_content_type(ty), &terminals)?;
-        snapshot.insert_parents(Id::bottom(), &[Parent::new(Id::of_content_type(ty), 0)])?;
-
+        let id = snapshot.build_from(ty, bytes).await?;
         snapshot.commit().await?;
-
-        let &main_id = inserted_rules.get(&main_rule).unwrap();
-        Ok((main_id, db))
+        Ok((id, db))
     }
 }
 
@@ -122,10 +68,17 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         &mut self,
         other: &Snapshot<'b, S2, Rng2>,
     ) -> Result<()> {
-        let content_types = self.get_parents(Id::bottom()).await?.unwrap();
-        let mut terminal_bytes = Vec::with_capacity(content_types.len() * 256);
+        let mut terminal_bytes = vec![];
+        let content_types = self.get_parents(Id::bottom()).await?;
         for Parent { id, .. } in content_types {
-            let bytes = self.get_parents(id).await?.unwrap();
+            let bytes = self.get_parents(id).await?;
+            for Parent { id, .. } in bytes {
+                terminal_bytes.push(id);
+            }
+        }
+        let content_types = other.get_parents(Id::bottom()).await?;
+        for Parent { id, .. } in content_types {
+            let bytes = other.get_parents(id).await?;
             for Parent { id, .. } in bytes {
                 terminal_bytes.push(id);
             }
@@ -137,7 +90,9 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         let mut other_contents = HashMap::new();
 
         while let Some(id) = terminal_bytes.pop() {
-            match (self.get_parents(id).await?, other.get_parents(id).await?) {
+            let own_parents = self.get_parents_if_exists(id).await?;
+            let other_parents = other.get_parents_if_exists(id).await?;
+            match (own_parents, other_parents) {
                 (None, None) => {}
                 (Some(_), None) => {}
                 (None, Some(other_parents)) => {
@@ -164,12 +119,12 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
 
             for &own_id in own_ids.iter() {
                 if !own_contents.contains_key(&own_id) {
-                    own_contents.insert(own_id, self.get_children(own_id).await?.unwrap());
+                    own_contents.insert(own_id, self.get_children(own_id).await?);
                 }
             }
             for &other_id in other_ids.iter() {
                 if !other_contents.contains_key(&other_id) {
-                    other_contents.insert(other_id, other.get_children(other_id).await?.unwrap());
+                    other_contents.insert(other_id, other.get_children(other_id).await?);
                 }
             }
 
@@ -205,7 +160,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                 if let Some((subseq, own_subseq, other_subseq)) = overlap {
                     let (own_id, own_i, own_j) = own_subseq;
                     let (other_id, other_i, other_j) = other_subseq;
-                    let own_content = self.get_children(own_id).await?.unwrap();
+                    let own_content = self.get_children(own_id).await?;
 
                     debug!(">> found match for {own_id} and {other_id}: '{subseq:?}'");
                     assert_eq!(other_content[other_i..other_j], own_content[own_i..own_j]);
@@ -229,16 +184,18 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     // 2. store parents of subseq
                     if subseq_equals_own && subseq_equals_other {
                         // - change children of own id parents from own id to other id
-                        for parent in self.get_parents(own_id).await?.unwrap().iter() {
-                            let mut children_of_own_parent =
-                                self.get_children(parent.id).await?.unwrap();
+                        for parent in self.get_parents(own_id).await?.iter() {
+                            let mut children_of_own_parent = self.get_children(parent.id).await?;
                             children_of_own_parent[parent.index as usize] = other_id;
                             self.insert_children(parent.id, &children_of_own_parent)?;
                             own_contents_next_iteration.insert(own_id, children_of_own_parent);
                         }
                         // - add all other parents to own parents
-                        let own_parents = self.get_parents(own_id).await?.unwrap();
-                        let mut parents = self.get_parents(other_id).await?.unwrap_or_default();
+                        let own_parents = self.get_parents(own_id).await?;
+                        let mut parents = self
+                            .get_parents_if_exists(other_id)
+                            .await?
+                            .unwrap_or_default();
                         parents.extend(own_parents);
                         parents.sort();
                         parents.dedup();
@@ -246,7 +203,10 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         debug!(">> 2.a) parents: {parents:?}");
                     } else if subseq_equals_other {
                         // - set own id as parent of subseq
-                        let mut parents = self.get_parents(other_id).await?.unwrap_or_default();
+                        let mut parents = self
+                            .get_parents_if_exists(other_id)
+                            .await?
+                            .unwrap_or_default();
                         parents.push(Parent::new(own_id, own_i as u32));
                         parents.sort();
                         parents.dedup();
@@ -254,7 +214,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         debug!(">> 2.b) parents: {parents:?}");
                     } else if subseq_equals_own {
                         // - set other id as parent of subseq
-                        let mut parents = self.get_parents(own_id).await?.unwrap();
+                        let mut parents = self.get_parents(own_id).await?;
                         parents.push(Parent::new(other_id, other_i as u32));
                         parents.sort();
                         parents.dedup();
@@ -286,7 +246,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         // - shift the parent index (to own id) of all children after subseq
                         for (after_subseq, &child_id) in own_content[own_j..].iter().enumerate() {
                             let index_in_own = own_j + after_subseq;
-                            let mut parents = self.get_parents(child_id).await?.unwrap();
+                            let mut parents = self.get_parents(child_id).await?;
                             for parent in parents.iter_mut() {
                                 if parent.id == own_id && parent.index == index_in_own as u32 {
                                     parent.index -= (subseq.len() - 1) as u32;
@@ -312,8 +272,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         // - point to subseq instead of own id
                         // - point to subseq id instead of other id
                         for (subseq_i, &child) in subseq.iter().enumerate() {
-                            let mut parents_of_subseq_child =
-                                self.get_parents(child).await?.unwrap();
+                            let mut parents_of_subseq_child = self.get_parents(child).await?;
                             for parent in parents_of_subseq_child.iter_mut() {
                                 if parent.id == own_id && parent.index == (own_i + subseq_i) as u32
                                 {
@@ -336,7 +295,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
 
                     // 5. collect ids for next round
                     if subseq_equals_own {
-                        for parent in self.get_parents(own_id).await?.unwrap() {
+                        for parent in self.get_parents(own_id).await? {
                             if parent.id != other_id {
                                 own_ids_next_iteration.insert(parent.id);
                             }
@@ -345,7 +304,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         own_ids_next_iteration.insert(own_id);
                     }
                     if subseq_equals_other {
-                        for parent in other.get_parents(other_id).await?.unwrap() {
+                        for parent in other.get_parents(other_id).await? {
                             other_ids_next_iteration.insert(parent.id);
                         }
                     } else {
@@ -361,13 +320,16 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     let mut all_children_previously_inserted = true;
                     for (i, &child_id) in other_content.iter().enumerate() {
                         if !child_id.points_to_byte()
-                            && self.get_children(child_id).await?.is_none()
+                            && self.get_children_if_exists(child_id).await?.is_none()
                         {
                             debug!(">>>> child {child_id} of {other_id} is still missing");
                             all_children_previously_inserted = false;
                             break;
                         }
-                        let mut parents = self.get_parents(child_id).await?.unwrap_or_default();
+                        let mut parents = self
+                            .get_parents_if_exists(child_id)
+                            .await?
+                            .unwrap_or_default();
                         parents.push(Parent::new(other_id, i as u32));
                         parents.sort();
                         parents.dedup();
@@ -375,8 +337,12 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     }
                     if all_children_previously_inserted {
                         debug!(">>>> no overlap for {other_id}, can be inserted");
-                        let parents = other.get_parents(other_id).await?.unwrap();
-                        other_ids_next_iteration.extend(parents.iter().map(|p| p.id));
+                        let parents = other.get_parents(other_id).await?;
+                        if parents.is_empty() {
+                            self.insert_parents(other_id, &[])?;
+                        } else {
+                            other_ids_next_iteration.extend(parents.iter().map(|p| p.id));
+                        }
                         self.insert_children(other_id, &other_content)?;
                     }
                 }
@@ -393,7 +359,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         info!("***** DB PRINTOUT FOR '{}' *****", self.kv.name());
         info!("*** NODES: ***");
         for key in self.kv.keys().await? {
-            if key[0] == KvKeyPrefix::Node as u8 {
+            if key[0] == KvKeyPrefix::Children as u8 {
                 let id = Id::parse_all(&key[1..])?[0];
                 let children = self.get_children(id).await?;
                 info!("{id} -> {:?}", children);
@@ -412,11 +378,14 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
 
     pub async fn check_consistency(&self) -> Result<()> {
         for key in self.kv.keys().await? {
-            if key[0] == KvKeyPrefix::Node as u8 {
+            if key[0] == KvKeyPrefix::Children as u8 {
                 let id = Id::parse_all(&key[1..])?[0];
-                let children = self.get_children(id).await?.unwrap_or_default();
+                if id.points_to_byte() {
+                    continue;
+                }
+                let children = self.get_children(id).await?;
                 for (i, &child_id) in children.iter().enumerate() {
-                    let parents = self.get_parents(child_id).await?.unwrap();
+                    let parents = self.get_parents(child_id).await?;
                     let mut found_child = false;
                     for parent in parents {
                         if parent.id == id && parent.index == i as u32 {
@@ -433,12 +402,12 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         for key in self.kv.keys().await? {
             if key[0] == KvKeyPrefix::Parents as u8 {
                 let id = Id::parse_all(&key[1..])?[0];
-                let parents = self.get_parents(id).await?.unwrap_or_default();
+                let parents = self.get_parents(id).await?;
                 for parent in parents {
                     if parent.id.points_to_byte() {
                         continue;
                     }
-                    let children = self.get_children(parent.id).await?.unwrap_or_default();
+                    let children = self.get_children(parent.id).await?;
                     if children.len() <= parent.index as usize
                         || children[parent.index as usize] != id
                     {
@@ -453,30 +422,77 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         Ok(())
     }
 
-    /*pub async fn add(&mut self, ty: ContentType, bytes: &[u8]) -> Result<Id> {
-        let other_db = Db::build_from(ty, bytes).await?;
-        let other_snapshot = other_db.current().await;
-        self.import(&other_snapshot).await
-    }*/
+    pub async fn add(&mut self, ty: ContentType, bytes: &[u8]) -> Result<Id> {
+        let other_storage = MemoryStorage::new();
+        let other_kv = KvStore::open(other_storage).await?;
+        let mut other_snapshot = Snapshot {
+            kv: other_kv.current().await,
+            rng: &self.rng,
+        };
+        let id = other_snapshot.build_from(ty, bytes).await?;
+        self.import(&other_snapshot).await?;
+        Ok(id)
+    }
 
-    pub async fn search(&self, _ty: ContentType, _term: &[u8]) -> Result<Vec<Match>> {
+    pub async fn search(&self, ty: ContentType, bytes: &[u8]) -> Result<Vec<Match>> {
         todo!()
     }
 
-    /// Commits the current transaction, thereby persisting all of its changes.
+    /// Commits the current transaction, thereby persisting all changes.
     pub async fn commit(self) -> Result<()> {
         Ok(self.kv.commit().await?)
     }
 
-    fn new_id(&mut self) -> Result<Id> {
-        let id: u128 = self.rng.lock()?.gen();
-        Ok(Id::from(id))
+    pub async fn get(&self, id: Id) -> Result<Option<NodeTree>> {
+        if let Some(mut ids) = self.get_children_if_exists(id).await? {
+            let mut children = HashMap::new();
+            let mut parents = HashMap::new();
+            children.insert(id, ids.clone());
+            parents.insert(id, self.get_parents(id).await?);
+            while let Some(id) = ids.pop() {
+                if !children.contains_key(&id) {
+                    let children_of_id = if id.points_to_byte() {
+                        vec![]
+                    } else {
+                        self.get_children(id).await?
+                    };
+                    let parents_of_id = self.get_parents(id).await?;
+                    ids.extend(children_of_id.iter());
+                    children.insert(id, children_of_id);
+                    parents.insert(id, parents_of_id);
+                }
+            }
+            Ok(Some(NodeTree { children, parents }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn get_children(&self, id: Id) -> Result<Vec<Id>> {
+        match self.get_children_if_exists(id).await {
+            Ok(Some(parents)) => Ok(parents),
+            Ok(None) => Err(Error::ChildIdNotFound(id)),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_children_if_exists(&self, id: Id) -> Result<Option<Vec<Id>>> {
+        let id_bytes = id.as_bytes();
+        let mut k = Vec::with_capacity(1 + id_bytes.len());
+        k.push(KvKeyPrefix::Children as u8);
+        k.extend_from_slice(&id_bytes);
+
+        if let Some(child_bytes) = self.kv.get(&k).await? {
+            Ok(Some(Id::parse_all(&child_bytes)?))
+        } else {
+            Ok(None)
+        }
     }
 
     fn insert_children(&mut self, id: Id, children: &[Id]) -> Result<()> {
         let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
-        k.push(KvKeyPrefix::Node as u8);
+        k.push(KvKeyPrefix::Children as u8);
         k.extend_from_slice(&id_bytes);
 
         let mut v: Vec<u8> = Vec::with_capacity(Id::num_bytes() * children.len());
@@ -489,20 +505,28 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
     fn remove_children(&mut self, id: Id) -> Result<()> {
         let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
-        k.push(KvKeyPrefix::Node as u8);
+        k.push(KvKeyPrefix::Children as u8);
         k.extend_from_slice(&id_bytes);
 
         Ok(self.kv.remove(k)?)
     }
 
-    pub async fn get_children(&self, id: Id) -> Result<Option<Vec<Id>>> {
+    async fn get_parents(&self, id: Id) -> Result<Vec<Parent>> {
+        match self.get_parents_if_exists(id).await {
+            Ok(Some(parents)) => Ok(parents),
+            Ok(None) => Err(Error::ParentIdNotFound(id)),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_parents_if_exists(&self, id: Id) -> Result<Option<Vec<Parent>>> {
         let id_bytes = id.as_bytes();
         let mut k = Vec::with_capacity(1 + id_bytes.len());
-        k.push(KvKeyPrefix::Node as u8);
+        k.push(KvKeyPrefix::Parents as u8);
         k.extend_from_slice(&id_bytes);
 
-        if let Some(child_bytes) = self.kv.get(&k).await? {
-            Ok(Some(Id::parse_all(&child_bytes)?))
+        if let Some(parent_bytes) = self.kv.get(&k).await? {
+            Ok(Some(Parent::parse_all(&parent_bytes)?))
         } else {
             Ok(None)
         }
@@ -530,21 +554,69 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         Ok(self.kv.remove(k)?)
     }
 
-    pub async fn get_parents(&self, id: Id) -> Result<Option<Vec<Parent>>> {
-        let id_bytes = id.as_bytes();
-        let mut k = Vec::with_capacity(1 + id_bytes.len());
-        k.push(KvKeyPrefix::Parents as u8);
-        k.extend_from_slice(&id_bytes);
+    fn new_id(&mut self) -> Result<Id> {
+        let id: u128 = self.rng.lock()?.gen();
+        Ok(Id::from(id))
+    }
 
-        if let Some(parent_bytes) = self.kv.get(&k).await? {
-            Ok(Some(Parent::parse_all(&parent_bytes)?))
-        } else {
-            Ok(None)
+    async fn build_from(&mut self, ty: ContentType, bytes: &[u8]) -> Result<Id> {
+        let (main_rule, grammar) = sequitur(bytes);
+        let mut inserted_rules = HashMap::<u32, Id>::new();
+        let mut parents = HashMap::<Id, Vec<Parent>>::new();
+        let mut terminals = Vec::new();
+        for (rule_number, rule) in grammar {
+            let id = if let Some(&id) = inserted_rules.get(&rule_number) {
+                id
+            } else {
+                let id = self.new_id()?;
+                inserted_rules.insert(rule_number, id);
+                id
+            };
+            if !parents.contains_key(&id) {
+                parents.insert(id, Vec::new());
+            }
+
+            let mut children = Vec::with_capacity(rule.content.len());
+            for (i, symbol) in rule.content.into_iter().enumerate() {
+                let child_id = if symbol <= 255 {
+                    // terminal (= normal byte)
+                    let id = Id::of_byte(ty, symbol as u8);
+                    // pseudo-parent to allow finding all terminal bytes of a particular type:
+                    terminals.push(Parent::new(id, 0));
+                    id
+                } else if let Some(&id) = inserted_rules.get(&symbol) {
+                    // rule
+                    id
+                } else {
+                    // rule
+                    let id = self.new_id()?;
+                    inserted_rules.insert(symbol, id);
+                    id
+                };
+                children.push(child_id);
+                parents
+                    .entry(child_id)
+                    .or_default()
+                    .push(Parent::new(id, i as u32));
+            }
+            self.insert_children(id, &children)?;
         }
+        for (id, mut parents) in parents {
+            parents.sort();
+            parents.dedup();
+            self.insert_parents(id, &parents)?;
+        }
+        terminals.sort();
+        terminals.dedup();
+        self.insert_parents(Id::of_content_type(ty), &terminals)?;
+        self.insert_parents(Id::bottom(), &[Parent::new(Id::of_content_type(ty), 0)])?;
+
+        let &main_id = inserted_rules.get(&main_rule).unwrap();
+        Ok(main_id)
     }
 }
 
 enum KvKeyPrefix {
-    Node = 0,
+    Children = 0,
     Parents = 1,
 }

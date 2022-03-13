@@ -1,18 +1,20 @@
 use std::{
     convert::TryFrom,
     fmt::{self, Debug, Display, Formatter},
-    hash::Hash, sync::PoisonError,
+    hash::Hash, sync::PoisonError, collections::HashMap,
 };
 
 /// The error type for node operations.
 #[derive(Debug)]
 pub enum Error {
-    /// The id is not a valid uuid.
-    InvalidId(String),
     /// The specified bytes could not be deserialized into a list of ids.
     InvalidIds(Vec<u8>),
     /// The specified bytes could not be deserialized into a list of parents.
     InvalidParents(Vec<u8>),
+    /// The specified child id should have been part of the DB, but could not be found.
+    ChildIdNotFound(Id),
+    /// The specified parent id should have been part of the DB, but could not be found.
+    ParentIdNotFound(Id),
     /// Caused by a failed operation of the underlying KV store.
     StoreError(assemblage_kv::Error),
     /// The RNG mutex could not be locked
@@ -134,20 +136,9 @@ impl PartialOrd for Id {
 }
 
 #[derive(Debug, Clone)]
-pub struct Node {
-    pub id: Id,
-    pub children: Vec<Node>,
-    pub parents: Vec<Parent>,
-}
-
-impl Node {
-    pub fn new(id: Id, children: Vec<Node>, parents: Vec<Parent>) -> Self {
-        Self { id, children, parents }
-    }
-
-    pub fn similar(&self) -> Vec<Match> {
-        todo!()
-    }
+pub struct NodeTree {
+    pub children: HashMap<Id, Vec<Id>>,
+    pub parents: HashMap<Id, Vec<Parent>>,
 }
 
 /// A node that contains a child node at the specified index.
