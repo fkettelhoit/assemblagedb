@@ -21,6 +21,7 @@ impl DigramInRule {
 #[derive(Debug)]
 pub(crate) struct Rule {
     pub(crate) content: Vec<RuleOrTerminal>,
+    pub(crate) bytes_if_expanded: u32,
     pointers_to_rule: usize,
 }
 
@@ -30,6 +31,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
         let mut grammar = HashMap::new();
         let rule = Rule {
             content: bytes.iter().copied().map(|b| b as u32).collect(),
+            bytes_if_expanded: bytes.len() as u32,
             pointers_to_rule: 1,
         };
         grammar.insert(main_rule_num, rule);
@@ -42,6 +44,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
     let mut bytes = bytes.iter().copied().map(|b| b as u32);
     let mut main = Rule {
         content: vec![bytes.next().unwrap()],
+        bytes_if_expanded: 0, // will be correctly set at the end of the fn
         pointers_to_rule: 1,
     };
     while let Some(byte) = pushed_back.pop().or_else(|| bytes.next()) {
@@ -82,8 +85,11 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
                 }
                 (main, other) => {
                     // create new rule, replace both occurrences with it
+                    let bytes_if_expanded =
+                        bytes_if_expanded(&rules, digram[0]) + bytes_if_expanded(&rules, digram[1]);
                     let mut r = Rule {
                         content: digram.to_vec(),
+                        bytes_if_expanded,
                         pointers_to_rule: 2,
                     };
                     let r_num = rule_counter;
@@ -113,6 +119,11 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
             main.content.push(byte as u32);
         }
     }
+    main.bytes_if_expanded = main
+        .content
+        .iter()
+        .map(|symbol| bytes_if_expanded(&rules, *symbol))
+        .sum();
     rules.insert(main_rule_num, main);
     (main_rule_num, rules)
 }
@@ -207,6 +218,14 @@ fn enforce_rule_utility(
         } else {
             i += 1;
         }
+    }
+}
+
+fn bytes_if_expanded(rules: &HashMap<u32, Rule>, symbol: u32) -> u32 {
+    if symbol < 256 {
+        1
+    } else {
+        rules.get(&symbol).unwrap().bytes_if_expanded
     }
 }
 
@@ -363,6 +382,10 @@ mod tests {
                 panic!("No rule for {}, expected {}", r, expected);
             }
         }
+        assert_eq!(
+            rules.get(&main_rule_num).unwrap().bytes_if_expanded,
+            s.as_bytes().len() as u32
+        );
     }
 
     fn pretty_print_rules(main_rule_num: u32, rules: &HashMap<u32, Rule>) {

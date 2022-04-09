@@ -15,6 +15,8 @@ pub enum Error {
     ChildIdNotFound(Id),
     /// The specified parent id should have been part of the DB, but could not be found.
     ParentIdNotFound(Id),
+    /// The specified bytes id should have been part of the DB, but could not be found.
+    BytesOfIdNotFound(Id),
     /// Caused by a failed operation of the underlying KV store.
     StoreError(assemblage_kv::Error),
     /// The RNG mutex could not be locked
@@ -139,6 +141,23 @@ impl PartialOrd for Id {
 pub struct NodeTree {
     pub children: HashMap<Id, Vec<Id>>,
     pub parents: HashMap<Id, Vec<Parent>>,
+    pub bytes: HashMap<Id, u32>,
+}
+
+impl NodeTree {
+    pub fn descendants_of(&self, id: Id) -> Vec<Id> {
+        let mut ids = vec![id];
+        let mut descendants = vec![];
+        while let Some(id) = ids.pop() {
+            if let Some(children) = self.children.get(&id) {
+                for &child_id in children {
+                    ids.push(child_id);
+                    descendants.push(child_id);
+                }
+            }
+        }
+        descendants
+    }
 }
 
 /// A node that contains a child node at the specified index.
@@ -233,8 +252,8 @@ impl TryFrom<Vec<u8>> for Parents {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone)]
 pub struct Match {
-    pub id: Id,
-    pub bytes_matched: u32,
+    pub overlap_in_source: f32,
+    pub overlap_in_match: f32,
 }

@@ -80,6 +80,25 @@ fn index_text2() {
     })
 }
 
+#[test]
+fn similar() {
+    with_storage(file!(), line!(), |_| async {
+        let (x_id, x) = Db::build_from(thread_rng(), TEXT_CONTENT, "foobarbaz".as_bytes()).await?;
+        let (y_id, y) = Db::build_from(thread_rng(), TEXT_CONTENT, "xybarqux".as_bytes()).await?;
+        let mut x_snapshot = x.current().await;
+        let y_snapshot = y.current().await;
+        x_snapshot.import(&y_snapshot).await?;
+        let y_tree = x_snapshot.get(y_id).await?.unwrap();
+        x_snapshot.print().await?;
+        let matches = x_snapshot.similar(&y_tree).await?;
+        let similar_to_y = matches.get(&y_id).unwrap();
+        assert!(similar_to_y
+            .iter()
+            .any(|(id, m)| *id == x_id && m.overlap_in_match < 1.0 && m.overlap_in_source < 1.0));
+        Ok(())
+    })
+}
+
 fn with_storage<T, Fut>(file: &str, line: u32, mut t: T)
 where
     T: FnMut(PlatformStorage) -> Fut,
@@ -103,8 +122,7 @@ where
             .await
             .expect("Could not open storage for test");
 
-        let result = t(storage).await;
-        assert!(result.is_ok());
+        t(storage).await.unwrap();
 
         assemblage_kv::storage::purge(&name)
             .await

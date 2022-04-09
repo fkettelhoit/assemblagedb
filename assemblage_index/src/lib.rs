@@ -88,6 +88,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         let mut other_ids = HashSet::new();
         let mut own_contents = HashMap::new();
         let mut other_contents = HashMap::new();
+        let mut bytes_of_children = HashMap::new();
 
         while let Some(id) = terminal_bytes.pop() {
             let own_parents = self.get_parents_if_exists(id).await?;
@@ -171,12 +172,16 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     // 1. store subseq as a new node (if necessary)
                     let subseq_id = if subseq_equals_other {
                         self.insert_children(other_id, subseq)?;
+                        self.insert_total_bytes(other_id, subseq, &mut bytes_of_children)
+                            .await?;
                         other_id
                     } else if subseq_equals_own {
                         own_id
                     } else {
                         let subseq_id = self.new_id()?;
                         self.insert_children(subseq_id, subseq)?;
+                        self.insert_total_bytes(subseq_id, subseq, &mut bytes_of_children)
+                            .await?;
                         subseq_id
                     };
                     debug!(">> 1. subseq_id: {subseq_id}");
@@ -188,6 +193,12 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                             let mut children_of_own_parent = self.get_children(parent.id).await?;
                             children_of_own_parent[parent.index as usize] = other_id;
                             self.insert_children(parent.id, &children_of_own_parent)?;
+                            self.insert_total_bytes(
+                                parent.id,
+                                &children_of_own_parent,
+                                &mut bytes_of_children,
+                            )
+                            .await?;
                             own_contents_next_iteration.insert(own_id, children_of_own_parent);
                         }
                         // - add all other parents to own parents
@@ -240,6 +251,8 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         compressed.push(subseq_id);
                         compressed.extend(&own_content[own_j..]);
                         self.insert_children(own_id, &compressed)?;
+                        self.insert_total_bytes(own_id, &compressed, &mut bytes_of_children)
+                            .await?;
                         debug!(">> 3.a) own {own_id}: {own_content:?} -> {compressed:?}");
                         own_contents_next_iteration.insert(own_id, compressed);
 
@@ -263,6 +276,8 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         compressed.push(subseq_id);
                         compressed.extend(&other_content[other_j..]);
                         self.insert_children(other_id, &compressed)?;
+                        self.insert_total_bytes(other_id, &compressed, &mut bytes_of_children)
+                            .await?;
                         debug!(">> 3.b) other {other_id}: {other_content:?} -> {compressed:?}");
                         other_contents_next_iteration.insert(other_id, compressed);
                     }
@@ -344,6 +359,8 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                             other_ids_next_iteration.extend(parents.iter().map(|p| p.id));
                         }
                         self.insert_children(other_id, &other_content)?;
+                        self.insert_total_bytes(other_id, &other_content, &mut bytes_of_children)
+                            .await?;
                     }
                 }
             }
@@ -396,6 +413,10 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                         panic!("Child {i} with id {child_id} of {id} is missing!");
                     }
                 }
+                let bytes = self.get_bytes_if_exists(id).await?;
+                if bytes.is_none() {
+                    panic!("Bytes for id {id} are missing!");
+                }
                 info!("{id} -> {:?}", children);
             }
         }
@@ -447,25 +468,186 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         if let Some(mut ids) = self.get_children_if_exists(id).await? {
             let mut children = HashMap::new();
             let mut parents = HashMap::new();
+            let mut bytes = HashMap::new();
             children.insert(id, ids.clone());
             parents.insert(id, self.get_parents(id).await?);
+            bytes.insert(id, self.get_bytes(id).await?);
             while let Some(id) = ids.pop() {
                 if !children.contains_key(&id) {
-                    let children_of_id = if id.points_to_byte() {
-                        vec![]
+                    let (children_of_id, bytes_of_id) = if id.points_to_byte() {
+                        (vec![], 1)
                     } else {
-                        self.get_children(id).await?
+                        (self.get_children(id).await?, self.get_bytes(id).await?)
                     };
                     let parents_of_id = self.get_parents(id).await?;
                     ids.extend(children_of_id.iter());
                     children.insert(id, children_of_id);
                     parents.insert(id, parents_of_id);
+                    bytes.insert(id, bytes_of_id);
                 }
             }
-            Ok(Some(NodeTree { children, parents }))
+            Ok(Some(NodeTree {
+                children,
+                parents,
+                bytes,
+            }))
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn similar(&self, tree: &NodeTree) -> Result<HashMap<Id, HashMap<Id, Match>>> {
+        // to find the similarities of nodes _inside_ the tree with nodes _outside_ the tree...
+        type InsideTree = Id;
+        type OutsideTree = Id;
+        type BytesInside = u32; // overlapping bytes of a node inside the tree
+        type BytesOutside = u32; // overlapping bytes of a node outside the tree
+
+        // 1. find all "borders": nodes inside the tree with parents outside the tree
+        let mut borders = Vec::<(InsideTree, OutsideTree, BytesOutside)>::new();
+        for (&child_id, parents) in tree.parents.iter() {
+            let mut overlaps = HashMap::<OutsideTree, BytesOutside>::new();
+            for parent in parents {
+                if !tree.children.contains_key(&parent.id) {
+                    let overlapping_bytes_in_ancestor = *tree.bytes.get(&child_id).unwrap();
+                    borders.push((child_id, parent.id, overlapping_bytes_in_ancestor));
+                    *overlaps.entry(parent.id).or_default() += overlapping_bytes_in_ancestor;
+                }
+            }
+        }
+        println!("## BORDERS:");
+        for x in borders.iter() {
+            println!(">> {x:?}");
+        }
+
+        // 2. find all (outside) ancestors of these "border parents"
+        let mut fully_contained = HashMap::<InsideTree, HashMap<OutsideTree, BytesOutside>>::new();
+        {
+            let mut borders_and_ancestors = borders.clone();
+            while let Some((inside_id, outside_id, bytes)) = borders_and_ancestors.pop() {
+                *fully_contained
+                    .entry(inside_id)
+                    .or_default()
+                    .entry(outside_id)
+                    .or_default() += bytes;
+                let parents = self
+                    .get_parents(outside_id)
+                    .await?
+                    .into_iter()
+                    .map(|parent| (inside_id, parent.id, bytes));
+                borders_and_ancestors.extend(parents);
+            }
+        }
+        println!("## FULLY CONTAINED:");
+        for x in fully_contained.iter() {
+            println!(">> {x:?}");
+        }
+
+        // 3. (outside) ancestors fully contain the "border children" and their descendants
+        {
+            let mut borders_and_descendants: Vec<(InsideTree, InsideTree)> = borders
+                .iter()
+                .map(|(inside_id, _, _)| (*inside_id, *inside_id))
+                .collect();
+            while let Some((border_id, descendant_id)) = borders_and_descendants.pop() {
+                let bytes = *tree.bytes.get(&descendant_id).unwrap();
+
+                if descendant_id != border_id {
+                    let mut descendant_fully_contained =
+                        fully_contained.remove(&descendant_id).unwrap_or_default();
+                    for &ancestor_id in fully_contained.get(&border_id).unwrap().keys() {
+                        *descendant_fully_contained.entry(ancestor_id).or_default() += bytes;
+                    }
+                    fully_contained.insert(descendant_id, descendant_fully_contained);
+                }
+
+                if let Some(children) = tree.children.get(&descendant_id) {
+                    let children = children
+                        .into_iter()
+                        .map(|descendant_id| (border_id, *descendant_id));
+                    borders_and_descendants.extend(children);
+                }
+            }
+        }
+        println!("## FULLY CONTAINED:");
+        for x in fully_contained.iter() {
+            println!(">> {x:?}");
+        }
+
+        // 4. (outside) ancestors partially overlap the (inside) ancestors of "border children"
+        let mut partially_overlapping =
+            HashMap::<InsideTree, HashMap<OutsideTree, (BytesInside, BytesOutside)>>::new();
+        let mut borders_and_ancestors: Vec<(InsideTree, InsideTree, BytesOutside)> = borders
+            .into_iter()
+            .map(|(inside_id, _, bytes)| (inside_id, inside_id, bytes))
+            .collect();
+        while let Some((border_id, ancestor_id, descendant_bytes)) = borders_and_ancestors.pop() {
+            if let Some(parents) = tree.parents.get(&ancestor_id) {
+                for parent in parents {
+                    if tree.children.contains_key(&parent.id) {
+                        let overlapping_with_inside_ancestor =
+                            partially_overlapping.entry(parent.id).or_default();
+                        for (outside_id, bytes_outside) in fully_contained.get(&border_id).unwrap()
+                        {
+                            let (bytes_in_inside_ancestor, bytes_in_outside_ancestor) =
+                                overlapping_with_inside_ancestor
+                                    .entry(*outside_id)
+                                    .or_default();
+                            *bytes_in_inside_ancestor += descendant_bytes;
+                            *bytes_in_outside_ancestor += bytes_outside;
+                        }
+                        borders_and_ancestors.push((border_id, parent.id, descendant_bytes));
+                    }
+                }
+            }
+        }
+        println!("## PARTIALLY OVERLAPPING:");
+        for x in partially_overlapping.iter() {
+            println!(">> {x:?}");
+        }
+
+        // 5. calculate similarity of each node in tree with outside ancestors
+
+        let mut matches = HashMap::<Id, HashMap<Id, Match>>::new();
+        for (&id, &bytes) in tree.bytes.iter() {
+            if let Some(partially_overlapping) = partially_overlapping.get(&id) {
+                for (&outside_id, &(overlapping_bytes_inside, overlapping_bytes_outside)) in
+                    partially_overlapping
+                {
+                    let bytes_outside = self.get_bytes(outside_id).await?;
+                    let overlap_in_match = overlapping_bytes_outside as f32 / bytes_outside as f32;
+                    let overlap_in_source = overlapping_bytes_inside as f32 / bytes as f32;
+                    let m = Match {
+                        overlap_in_source,
+                        overlap_in_match,
+                    };
+                    matches.entry(id).or_default().insert(outside_id, m);
+                }
+            }
+            if let Some(fully_contained) = fully_contained.get(&id) {
+                for (&outside_id, &overlapping_bytes_outside) in fully_contained {
+                    let bytes_outside = self.get_bytes(outside_id).await?;
+                    let overlap_in_source = 1.0;
+                    let mut overlap_in_match =
+                        overlapping_bytes_outside as f32 / bytes_outside as f32;
+
+                    let matches_of_id = matches.entry(id).or_default();
+                    if let Some(partial_overlap) = matches_of_id.get_mut(&outside_id) {
+                        overlap_in_match += partial_overlap.overlap_in_match;
+                    }
+                    let m = Match {
+                        overlap_in_source,
+                        overlap_in_match,
+                    };
+                    matches_of_id.insert(outside_id, m);
+                }
+            }
+        }
+        println!("## MATCHES:");
+        for x in matches.iter() {
+            println!(">> {x:?}");
+        }
+        Ok(matches)
     }
 
     async fn get_children(&self, id: Id) -> Result<Vec<Id>> {
@@ -554,6 +736,61 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         Ok(self.kv.remove(k)?)
     }
 
+    async fn get_bytes(&self, id: Id) -> Result<u32> {
+        match self.get_bytes_if_exists(id).await {
+            Ok(Some(bytes)) => Ok(bytes),
+            Ok(None) => Err(Error::BytesOfIdNotFound(id)),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn get_bytes_if_exists(&self, id: Id) -> Result<Option<u32>> {
+        let id_bytes = id.as_bytes();
+        let mut k = Vec::with_capacity(1 + id_bytes.len());
+        k.push(KvKeyPrefix::Bytes as u8);
+        k.extend_from_slice(&id_bytes);
+
+        if let Some(bytes) = self.kv.get(&k).await? {
+            let mut byte_array = [0u8; 4];
+            for i in 0..4 {
+                byte_array[i] = bytes[i];
+            }
+            Ok(Some(u32::from_be_bytes(byte_array)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    async fn insert_total_bytes(
+        &mut self,
+        id: Id,
+        children: &[Id],
+        bytes_of_children: &mut HashMap<Id, u32>,
+    ) -> Result<()> {
+        let mut total_bytes = 0;
+        for &id in children {
+            if let Some(bytes) = bytes_of_children.get(&id) {
+                total_bytes += bytes;
+            } else if id.points_to_byte() {
+                total_bytes += 1;
+            } else {
+                let bytes = self.get_bytes(id).await?;
+                bytes_of_children.insert(id, bytes);
+                total_bytes += bytes;
+            }
+        }
+        bytes_of_children.insert(id, total_bytes);
+        self.insert_bytes(id, total_bytes)
+    }
+
+    fn insert_bytes(&mut self, id: Id, bytes: u32) -> Result<()> {
+        let id_bytes = id.as_bytes();
+        let mut k = Vec::with_capacity(1 + id_bytes.len());
+        k.push(KvKeyPrefix::Bytes as u8);
+        k.extend_from_slice(&id_bytes);
+        Ok(self.kv.insert(k, bytes.to_be_bytes().to_vec())?)
+    }
+
     fn new_id(&mut self) -> Result<Id> {
         let id: u128 = self.rng.lock()?.gen();
         Ok(Id::from(id))
@@ -600,6 +837,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     .push(Parent::new(id, i as u32));
             }
             self.insert_children(id, &children)?;
+            self.insert_bytes(id, rule.bytes_if_expanded)?;
         }
         for (id, mut parents) in parents {
             parents.sort();
@@ -619,4 +857,5 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
 enum KvKeyPrefix {
     Children = 0,
     Parents = 1,
+    Bytes = 2,
 }
