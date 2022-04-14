@@ -837,7 +837,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
                     .push(Parent::new(id, i as u32));
             }
             self.insert_children(id, &children)?;
-            self.insert_bytes(id, rule.bytes_if_expanded)?;
+            self.insert_bytes(id, rule.total_symbols)?;
         }
         for (id, mut parents) in parents {
             parents.sort();

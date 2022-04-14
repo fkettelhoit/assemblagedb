@@ -21,7 +21,7 @@ impl DigramInRule {
 #[derive(Debug)]
 pub(crate) struct Rule {
     pub(crate) content: Vec<RuleOrTerminal>,
-    pub(crate) bytes_if_expanded: u32,
+    pub(crate) total_symbols: u32,
     pointers_to_rule: usize,
 }
 
@@ -31,7 +31,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
         let mut grammar = HashMap::new();
         let rule = Rule {
             content: bytes.iter().copied().map(|b| b as u32).collect(),
-            bytes_if_expanded: bytes.len() as u32,
+            total_symbols: bytes.len() as u32,
             pointers_to_rule: 1,
         };
         grammar.insert(main_rule_num, rule);
@@ -44,7 +44,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
     let mut bytes = bytes.iter().copied().map(|b| b as u32);
     let mut main = Rule {
         content: vec![bytes.next().unwrap()],
-        bytes_if_expanded: 0, // will be correctly set at the end of the fn
+        total_symbols: 0, // will be correctly set at the end of the fn
         pointers_to_rule: 1,
     };
     while let Some(byte) = pushed_back.pop().or_else(|| bytes.next()) {
@@ -85,11 +85,10 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
                 }
                 (main, other) => {
                     // create new rule, replace both occurrences with it
-                    let bytes_if_expanded =
-                        bytes_if_expanded(&rules, digram[0]) + bytes_if_expanded(&rules, digram[1]);
+                    let total_symbols = total_symbols(&rules, &digram);
                     let mut r = Rule {
                         content: digram.to_vec(),
-                        bytes_if_expanded,
+                        total_symbols,
                         pointers_to_rule: 2,
                     };
                     let r_num = rule_counter;
@@ -98,17 +97,22 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
                     let digram_in_main = DigramInRule::new(main_rule_num, index_in_main_rule);
                     enforce_digram_uniqueness(&mut digrams, digram_in_main, main, r_num);
 
-                    let other = rules.get_mut(&other.unwrap_or_default()).unwrap_or(main);
-                    enforce_digram_uniqueness(&mut digrams, matched, other, r_num);
+                    let other_rule = rules.get_mut(&other.unwrap_or_default()).unwrap_or(main);
+                    enforce_digram_uniqueness(&mut digrams, matched, other_rule, r_num);
 
                     digrams.insert(digram, digram_in_rule);
 
-                    enforce_rule_utility(&mut digrams, &mut rules, r_num, &mut r);
+                    let removed_rules =
+                        enforce_rule_utility(&mut digrams, &mut rules, r_num, &mut r);
+                    if let Some(other) = other {
+                        rules.get_mut(&other).unwrap().total_symbols -= removed_rules;
+                    }
 
                     rules.insert(r_num, r);
                     rule_counter += 1;
                 }
             }
+            println!("{rules:?}");
         } else {
             // digram exists only once, so append to main rule and add to digram index
             let r = DigramInRule {
@@ -119,11 +123,7 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
             main.content.push(byte as u32);
         }
     }
-    main.bytes_if_expanded = main
-        .content
-        .iter()
-        .map(|symbol| bytes_if_expanded(&rules, *symbol))
-        .sum();
+    main.total_symbols = total_symbols(&rules, &main.content);
     rules.insert(main_rule_num, main);
     (main_rule_num, rules)
 }
@@ -134,6 +134,7 @@ fn enforce_digram_uniqueness(
     rule: &mut Rule,
     r: u32,
 ) -> bool {
+    println!("enforce digram uniqueness of {r}: {rule:?}");
     // To replace a, b in a rule with r:
     // [pre_a, a, b, post_b]; with digrams index {(pre_a, a), (a, b), (b, post_b)} -->
     // [pre_a, r, post_b]; with digrams index {(pre_a, r), (r, post_b)}
@@ -169,6 +170,7 @@ fn enforce_digram_uniqueness(
             x = y;
         }
     }
+    rule.total_symbols += 1;
     rule.content.remove(i);
     if i < rule.content.len() {
         rule.content[i] = r;
@@ -183,8 +185,10 @@ fn enforce_rule_utility(
     rules: &mut HashMap<u32, Rule>,
     new_rule_num: u32,
     new_rule: &mut Rule,
-) {
+) -> u32 {
+    println!("enforce rule utility of {new_rule_num}: {new_rule:?}");
     let mut i = 0;
+    let mut removed_rules = 0;
     while i < new_rule.content.len() {
         let symbol = new_rule.content[i];
         if let Some(rule) = rules.get_mut(&symbol) {
@@ -210,7 +214,9 @@ fn enforce_rule_utility(
                     digrams.insert([a, b], DigramInRule::new(new_rule_num, i + content_len - 1));
                 }
                 new_rule.content.splice(i..i + 1, rule.content);
+                new_rule.total_symbols -= 1;
                 i += content_len;
+                removed_rules += 1;
             } else {
                 i += 1;
                 rule.pointers_to_rule -= 1;
@@ -219,14 +225,14 @@ fn enforce_rule_utility(
             i += 1;
         }
     }
+    removed_rules
 }
 
-fn bytes_if_expanded(rules: &HashMap<u32, Rule>, symbol: u32) -> u32 {
-    if symbol < 256 {
-        1
-    } else {
-        rules.get(&symbol).unwrap().bytes_if_expanded
-    }
+fn total_symbols(rules: &HashMap<u32, Rule>, symbols: &[u32]) -> u32 {
+    symbols
+        .into_iter()
+        .map(|&symbol| rules.get(&symbol).map(|r| r.total_symbols).unwrap_or(0) + 1)
+        .sum()
 }
 
 #[cfg(test)]
@@ -366,6 +372,7 @@ mod tests {
 
     fn expect_sequitur_result(s: &str, expected: HashMap<u32, &str>) {
         let (main_rule_num, rules) = sequitur(s.as_bytes());
+        println!("{rules:?}");
         if expected.len() != rules.len() {
             pretty_print_rules(main_rule_num, &rules);
             panic!(
@@ -374,18 +381,34 @@ mod tests {
                 rules.len()
             );
         }
-        for (r, expected) in expected {
+        for (r, expected) in expected.iter() {
             if let Some(rule) = rules.get(&(r + main_rule_num - 1)) {
                 let pretty = prettify(main_rule_num, rule);
-                assert_eq!(expected, pretty);
+                assert_eq!(expected, &pretty);
             } else {
                 panic!("No rule for {}, expected {}", r, expected);
             }
         }
         assert_eq!(
-            rules.get(&main_rule_num).unwrap().bytes_if_expanded,
-            s.as_bytes().len() as u32
+            rules.get(&main_rule_num).unwrap().total_symbols,
+            count_total_symbols(1, &expected)
         );
+    }
+
+    fn count_total_symbols(rule: u32, rules: &HashMap<u32, &str>) -> u32 {
+        let mut total_symbols = 0;
+        println!("{rule}, {rules:?}");
+        for symbol in rules.get(&rule).unwrap().chars() {
+            if symbol == ',' {
+                continue;
+            }
+            if let Some(rule) = symbol.to_digit(10) {
+                total_symbols += count_total_symbols(rule, rules) + 1;
+            } else {
+                total_symbols += 1;
+            }
+        }
+        total_symbols
     }
 
     fn pretty_print_rules(main_rule_num: u32, rules: &HashMap<u32, Rule>) {
