@@ -112,7 +112,6 @@ pub(crate) fn sequitur(bytes: &[u8]) -> (u32, HashMap<u32, Rule>) {
                     rule_counter += 1;
                 }
             }
-            println!("{rules:?}");
         } else {
             // digram exists only once, so append to main rule and add to digram index
             let r = DigramInRule {
@@ -134,7 +133,6 @@ fn enforce_digram_uniqueness(
     rule: &mut Rule,
     r: u32,
 ) -> bool {
-    println!("enforce digram uniqueness of {r}: {rule:?}");
     // To replace a, b in a rule with r:
     // [pre_a, a, b, post_b]; with digrams index {(pre_a, a), (a, b), (b, post_b)} -->
     // [pre_a, r, post_b]; with digrams index {(pre_a, r), (r, post_b)}
@@ -186,7 +184,6 @@ fn enforce_rule_utility(
     new_rule_num: u32,
     new_rule: &mut Rule,
 ) -> u32 {
-    println!("enforce rule utility of {new_rule_num}: {new_rule:?}");
     let mut i = 0;
     let mut removed_rules = 0;
     while i < new_rule.content.len() {
@@ -397,7 +394,6 @@ mod tests {
 
     fn count_total_symbols(rule: u32, rules: &HashMap<u32, &str>) -> u32 {
         let mut total_symbols = 0;
-        println!("{rule}, {rules:?}");
         for symbol in rules.get(&rule).unwrap().chars() {
             if symbol == ',' {
                 continue;

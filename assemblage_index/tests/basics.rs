@@ -3,6 +3,7 @@ use assemblage_index::{
     Db, Snapshot,
 };
 use assemblage_kv::storage::{PlatformStorage, Storage};
+use quickcheck_macros::quickcheck;
 use rand::thread_rng;
 use std::{collections::HashMap, future::Future};
 
@@ -99,14 +100,39 @@ fn similar() {
     })
 }
 
-fn with_storage<T, Fut>(file: &str, line: u32, mut t: T)
+#[quickcheck]
+fn add(existing: String, added: String) {
+    println!("\n>>>> Opening storage...");
+    with_storage(file!(), line!(), |_| async move {
+        println!("Building DB...");
+        let (_id, db) = Db::build_from(thread_rng(), TEXT_CONTENT, existing.as_bytes()).await?;
+        println!("Getting snapshot...");
+        let mut snapshot = db.current().await;
+        println!("Adding bytes...");
+        snapshot.add(TEXT_CONTENT, added.as_bytes()).await?;
+        Ok(())
+    })
+}
+
+/*#[quickcheck]
+fn search(prefix: String, search_term: String, suffix: String) {
+    with_storage(file!(), line!(), |_| async move {
+        let concat = format!("{prefix}{search_term}{suffix}");
+        let (_concat_id, db) = Db::build_from(thread_rng(), TEXT_CONTENT, concat.as_bytes()).await?;
+        let snapshot = db.current().await;
+        snapshot.search(TEXT_CONTENT, search_term.as_bytes()).await?;
+        Ok(())
+    })
+}*/
+
+fn with_storage<T, Fut>(file: &str, line: u32, t: T)
 where
-    T: FnMut(PlatformStorage) -> Fut,
+    T: FnOnce(PlatformStorage) -> Fut,
     Fut: Future<Output = assemblage_index::data::Result<()>>,
 {
     let _ignored = env_logger::Builder::from_default_env()
         .is_test(true)
-        .filter_level(log::LevelFilter::Trace)
+        .filter_level(log::LevelFilter::Error)
         .try_init();
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let file = std::path::Path::new(file)
