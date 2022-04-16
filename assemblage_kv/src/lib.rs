@@ -79,8 +79,13 @@
 use crate::{storage::Storage, timestamp::timestamp_now_monotonic};
 use crc32fast::Hasher;
 use log::warn;
-use std::{cmp::max, collections::HashMap, mem};
-use tokio::sync::{Mutex, MutexGuard};
+use std::{
+    cmp::max,
+    collections::HashMap,
+    mem,
+    sync::{Mutex as SyncMutex, MutexGuard as SyncMutexGuard},
+};
+use tokio::sync::{Mutex as AsyncMutex, MutexGuard as AsyncMutexGuard};
 
 pub mod storage;
 pub mod timestamp;
@@ -146,9 +151,9 @@ impl<'a> From<storage::Error> for Error {
 /// "moved to the trash").
 pub struct KvStore<S: Storage> {
     name: String,
-    storage: Mutex<S>,
-    offsets: Mutex<HashMap<Vec<u8>, Vec<BlobVersion>>>,
-    latest_timestamp: Mutex<u64>,
+    storage: AsyncMutex<S>,
+    offsets: AsyncMutex<HashMap<Vec<u8>, Vec<BlobVersion>>>,
+    latest_timestamp: AsyncMutex<u64>,
 }
 
 impl<S: Storage> KvStore<S> {
@@ -162,9 +167,9 @@ impl<S: Storage> KvStore<S> {
     pub async fn open(storage: S) -> Result<Self> {
         let mut store = Self {
             name: String::from(storage.name()),
-            storage: Mutex::new(storage),
-            offsets: Mutex::new(HashMap::new()),
-            latest_timestamp: Mutex::new(0),
+            storage: AsyncMutex::new(storage),
+            offsets: AsyncMutex::new(HashMap::new()),
+            latest_timestamp: AsyncMutex::new(0),
         };
         init_store(&mut store).await?;
         Ok(store)
@@ -201,8 +206,8 @@ impl<S: Storage> KvStore<S> {
             snapshot_timestamp,
             latest_timestamp,
             latest_offset,
-            cached_entries: Mutex::new(HashMap::new()),
             transaction_entries: HashMap::new(),
+            cached_entries: SyncMutex::new(HashMap::new()),
         }
     }
 
@@ -290,7 +295,20 @@ pub struct Snapshot<'a, S: Storage> {
     latest_timestamp: u64,
     latest_offset: u64,
     transaction_entries: HashMap<Vec<u8>, Option<Vec<u8>>>,
-    cached_entries: Mutex<HashMap<Vec<u8>, ValuesByVersion>>,
+    cached_entries: SyncMutex<HashMap<Vec<u8>, ValuesByVersion>>,
+}
+
+impl<'a, S: Storage> Clone for Snapshot<'a, S> {
+    fn clone(&self) -> Self {
+        Self {
+            store: self.store.clone(),
+            snapshot_timestamp: self.snapshot_timestamp.clone(),
+            latest_timestamp: self.latest_timestamp.clone(),
+            latest_offset: self.latest_offset.clone(),
+            transaction_entries: self.transaction_entries.clone(),
+            cached_entries: SyncMutex::new(self.cached_entries_locked().clone()),
+        }
+    }
 }
 
 type ValuesByVersion = HashMap<Version, Option<Vec<u8>>>;
@@ -310,7 +328,7 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         if let Some(version) = versions.last().copied() {
             self.get_version(k, version).await
         } else {
-            let mut cached_entries = self.cached_entries.lock().await;
+            let mut cached_entries = self.cached_entries_locked();
             cached_entries.insert(k.to_vec(), HashMap::new());
             Ok(None)
         }
@@ -330,7 +348,7 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         if let Some(version) = unremoved.last().copied() {
             self.get_version(k, version).await
         } else {
-            let mut cached_entries = self.cached_entries.lock().await;
+            let mut cached_entries = self.cached_entries_locked();
             cached_entries.insert(k.to_vec(), HashMap::new());
             Ok(None)
         }
@@ -338,7 +356,7 @@ impl<'a, S: Storage> Snapshot<'a, S> {
 
     /// Returns the specified version of the value with the given key.
     pub async fn get_version(&self, k: &[u8], version: Version) -> Result<Option<Vec<u8>>> {
-        let mut cached_entries = self.cached_entries.lock().await;
+        let mut cached_entries = self.cached_entries_locked();
         if !cached_entries.contains_key(k) {
             cached_entries.insert(k.to_vec(), HashMap::new());
         }
@@ -460,7 +478,7 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         let mut storage = self.store.storage.lock().await;
         let mut offsets = self.store.offsets.lock().await;
         {
-            for k in self.cached_entries.lock().await.keys() {
+            for k in self.cached_entries_locked().keys() {
                 if let Some(versions) = offsets.get(k) {
                     let version = versions
                         .last()
@@ -511,6 +529,12 @@ impl<'a, S: Storage> Snapshot<'a, S> {
         *self.store.latest_timestamp.lock().await = t_commit;
         storage.flush().await?;
         Ok(())
+    }
+
+    fn cached_entries_locked(&self) -> SyncMutexGuard<'_, HashMap<Vec<u8>, ValuesByVersion>> {
+        self.cached_entries
+            .lock()
+            .expect("another thread holding the lock panicked")
     }
 
     fn latest_time_or_offset(&self) -> SnapshotBoundary {
@@ -578,7 +602,7 @@ async fn init_store<S: Storage>(store: &mut KvStore<S>) -> Result<()> {
 
         offset += entry_length as u64;
     }
-    store.latest_timestamp = Mutex::new(latest_timestamp);
+    store.latest_timestamp = AsyncMutex::new(latest_timestamp);
     Ok(())
 }
 
@@ -662,7 +686,10 @@ impl Entry {
         })
     }
 
-    async fn read_from<S: Storage>(storage: &mut MutexGuard<'_, S>, offset: u64) -> Result<Self> {
+    async fn read_from<S: Storage>(
+        storage: &mut AsyncMutexGuard<'_, S>,
+        offset: u64,
+    ) -> Result<Self> {
         let max_length_of_header_and_sizes = 1 + 3 + 6;
         let mut header_and_sizes = storage.read(offset, max_length_of_header_and_sizes).await?;
         if header_and_sizes.is_empty() {
@@ -757,7 +784,7 @@ impl Entry {
         })
     }
 
-    async fn write_to<S: Storage>(&self, storage: &mut MutexGuard<'_, S>) -> Result<u64> {
+    async fn write_to<S: Storage>(&self, storage: &mut AsyncMutexGuard<'_, S>) -> Result<u64> {
         let offset = storage.write(&[self.header]).await?;
         storage.write(&self.sizes).await?;
         if let Some(k) = &self.key {

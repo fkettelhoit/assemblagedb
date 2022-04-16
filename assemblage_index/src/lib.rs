@@ -52,12 +52,13 @@ impl<Rng: rand::Rng> Db<MemoryStorage, Rng> {
         let storage = MemoryStorage::new();
         let db = Db::open(storage, rng).await?;
         let mut snapshot = db.current().await;
-        let id = snapshot.build_from(ty, bytes).await?;
+        let id = snapshot.import_bytes(ty, bytes).await?;
         snapshot.commit().await?;
         Ok((id, db))
     }
 }
 
+#[derive(Clone)]
 pub struct Snapshot<'a, S: Storage, Rng: rand::Rng> {
     kv: assemblage_kv::Snapshot<'a, S>,
     rng: &'a Mutex<Rng>,
@@ -450,13 +451,9 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
             kv: other_kv.current().await,
             rng: &self.rng,
         };
-        let id = other_snapshot.build_from(ty, bytes).await?;
+        let id = other_snapshot.import_bytes(ty, bytes).await?;
         self.import(&other_snapshot).await?;
         Ok(id)
-    }
-
-    pub async fn search(&self, ty: ContentType, bytes: &[u8]) -> Result<Vec<Match>> {
-        todo!()
     }
 
     /// Commits the current transaction, thereby persisting all changes.
@@ -494,6 +491,21 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn search(
+        &self,
+        ty: ContentType,
+        bytes: &[u8],
+    ) -> Result<(NodeTree, HashMap<Id, HashMap<Id, Match>>)> {
+        let mut snapshot = Snapshot {
+            kv: self.kv.clone(),
+            rng: self.rng,
+        };
+        let id = snapshot.add(ty, bytes).await?;
+        let nodes = self.get(id).await?.unwrap();
+        let similar = self.similar(&nodes).await?;
+        Ok((nodes, similar))
     }
 
     pub async fn similar(&self, tree: &NodeTree) -> Result<HashMap<Id, HashMap<Id, Match>>> {
@@ -796,7 +808,7 @@ impl<'a, S: Storage, Rng: rand::Rng> Snapshot<'a, S, Rng> {
         Ok(Id::from(id))
     }
 
-    async fn build_from(&mut self, ty: ContentType, bytes: &[u8]) -> Result<Id> {
+    async fn import_bytes(&mut self, ty: ContentType, bytes: &[u8]) -> Result<Id> {
         let (main_rule, grammar) = sequitur(bytes);
         let mut inserted_rules = HashMap::<u32, Id>::new();
         let mut parents = HashMap::<Id, Vec<Parent>>::new();
